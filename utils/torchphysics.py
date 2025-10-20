@@ -420,6 +420,7 @@ def print_outputs(outputs, loss, step):
     print(f"Loss:                     {loss.item():.6f}")
     print("-" * 40)
 
+
 class MultiFilterMDN(nn.Module):
     def __init__(self, x_data, filters_mask, param_dim=5, num_components=3, hidden_dim=128):
         """
