@@ -12,13 +12,77 @@ import torch
 import matplotlib.pyplot as plt
 import utils.torchphysics as tp
 
+
+
+
+class LCBuilder():
+    def __init__(self, model_name="sc4",
+                  model_parameters=[4, 2, 580, 2.5],
+                  model_units=[1,1,1,1],):
+
+        self.model_name = model_name
+        self.model_parameters = model_parameters
+        self.model_units = model_units
+
+    def build_sim_lc(self, mjd_array=np.linspace(3, 13, 300),
+                    filters_list=["g", "r", "i"],
+                    redshift=0.00526,
+                    dlum_factor = 1e-1,
+                    dm=31.1,
+                    dL=19.,
+                    dLerr=2.9):
+        
+        lc_fake = load_lc(fake=True)
+        lc_fake.meta['redshift'] = redshift
+        lc_fake.meta['dm'] = dm
+        model_inputs = np.array(self.model_parameters)*np.array(self.model_units)
+
+        filters_list_obj = [filters.filtdict[f] for f in filters_list]
+        filter_for_mjd = np.random.choice(filters_list_obj, size=len(mjd_array), replace=True)
+
+        if self.model_name=="sc4":
+            model = models.ShockCooling4(lc_fake)   
+            v_s = model_inputs[0]       # Shock velocity
+            M_env = model_inputs[1]     # Envelope mass
+            f_rho_M = model_inputs[1]   # Density profile factor
+            R = model_inputs[2]         # Radius
+            t_exp = model_inputs[3]     # explosion time
+            lum = model(mjd_array, v_s=v_s, M_env=M_env, f_rho_M=f_rho_M, R=R, t_exp=t_exp, f=filter_for_mjd)
+            dlum = np.random.normal(0, dlum_factor*np.mean(lum)/10, len(mjd_array))
+        else:
+            ValueError("Model doesn't exist")
+
+        # flux = lum / (4 * np.pi * dL**2)
+        # dflux = 2*flux*dLerr/dL
+        loglum = np.log10(lum)
+        dloglum = 1/np.log(10)*dlum/lum
+
+        lc = load_lc(lc=lightcurve.LC({"MJD":mjd_array,
+                    "lum":lum+dlum*np.random.choice([1.,-1], size=len(dlum)),
+                    "dlum":np.random.choice(np.abs(dlum), size=len(dlum)),
+                    "loglum":loglum,
+                    "dloglum":dloglum,
+                    "filter":filter_for_mjd}),
+                    fake=False)
+        
+        lc.meta['redshift'] = redshift
+        lc.meta['dm'] = dm
+        # lc.calcLum()
+        # lc.calcAbsMag()
+        # lc.calcMag()
+
+        return lc 
+
+
+
+
 def load_lc(lc = None, fake=True):
     if fake:
         lc =  lightcurve.LC({"MJD":[2,3,4],
                 "mag":[16,17,18],
                 "filters":[filters.filtdict["g"],filters.filtdict["g"],filters.filtdict["g"]]})
 
-    lc.meta['dm'] = 31.39
+    # lc.meta['dm'] = 31.39
     lc.meta['extinction'] = {
     'U_S': 0.125,
 
@@ -65,8 +129,8 @@ def load_lc(lc = None, fake=True):
     'DLT40': 0.,
     }
 
-    z = 0.00526
-    lc.meta['redshift'] = z  # redshift
+    # z = 0.00526
+    # lc.meta['redshift'] = z  # redshift
     return lc
 
 
