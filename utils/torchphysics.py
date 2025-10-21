@@ -336,13 +336,16 @@ class ModifiedSC4Loss(nn.Module):
         # outputs = sigmoid(outputs, b=1e-3)
         # outputs = denormalize(outputs, low=0, high=10)
         # print(outputs)
+        outputs = torch.clip(outputs,min=1e-3)
         v_s = outputs[0]       # Shock velocity
         M_env = outputs[1]     # Envelope mass
         f_rho_M = outputs[1]   # Density profile factor
         R = outputs[2]         # Radius
         t_exp = outputs[3] 
-        penalty = 1e-2*(torch.relu(t_exp - 3) ** 2) + 1e-4*(torch.relu(R - 6) ** 2) + 1e-4*(torch.relu(1/(M_env+0.1)))
+        # penalty = 1e-2*(torch.relu(t_exp - 3) ** 2) + 1e-4*(torch.relu(R - 6) ** 2) + 1e-4*(torch.relu(1/(M_env+0.1)))
         t_exp = torch.clip(t_exp, max=2.9999)
+        t_exp = torch.clip(t_exp, min=1e-3) 
+        
         # sigma = outputs[5] 
         loss = 0
         # print(targets[:,0][filters_mask[0]])
@@ -372,13 +375,26 @@ class ModifiedSC4Loss(nn.Module):
         y_true = torch.concatenate(y)
         return y_true
 
+    # def get_penalty(self, outputs):
+    #     v_s = outputs[0]       # Shock velocity
+    #     M_env = outputs[1]     # Envelope mass
+    #     f_rho_M = outputs[1]   # Density profile factor
+    #     R = outputs[2]         # Radius
+    #     t_exp = outputs[3] 
+    #     penalty = 1e-5*(torch.relu(t_exp - 3) ** 2) #+ 1e-3*(torch.relu(R - 10) ** 2) + 1e-6*(torch.relu(1/(M_env+0.1)))
+    #     return penalty
     def get_penalty(self, outputs):
-        v_s = outputs[0]       # Shock velocity
-        M_env = outputs[1]     # Envelope mass
-        f_rho_M = outputs[1]   # Density profile factor
-        R = outputs[2]         # Radius
-        t_exp = outputs[3] 
-        penalty = 1e-5*(torch.relu(t_exp - 3) ** 2) #+ 1e-3*(torch.relu(R - 10) ** 2) + 1e-6*(torch.relu(1/(M_env+0.1)))
+        v_s, M_env, R, t_exp = outputs
+
+        # Penalize out-of-bounds values
+        penalty = 0.0 + 1e-2*(torch.relu(R - 6) ** 2)
+        penalty += 1e-5 * (torch.relu(t_exp - 3) ** 2)      # upper bound for t_exp
+        penalty += 1e-4 * (torch.relu(-v_s) ** 2)           # penalize v_s < 0
+        penalty += 1e-4 * (torch.relu(-M_env) ** 2)         # penalize M_env < 0
+        # penalty += 1e-4 * (torch.relu(-f_rho_M) ** 2)       # penalize f_rho_M < 0
+        penalty += 1e-4 * (torch.relu(-R) ** 2)             # penalize R < 0
+        penalty += 1e-4 * (torch.relu(-t_exp) ** 2)         # penalize t_exp < 0
+
         return penalty
 
 def sigmoid(x, b):
