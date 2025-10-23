@@ -45,6 +45,25 @@ class ExperimentLogger:
 
     def save_samples(self, samples):
         np.save(os.path.join(self.exp_dir, "samples.npy"), samples)
+    
+    def save_history(self, history):
+        """
+        Save training history in both .npy and .csv formats.
+        """
+        import pandas as pd
+        import numpy as np
+        import os
+
+        losses = np.array(history["loss"])
+
+        # --- Save .npy ---
+        # np.save(os.path.join(self.exp_dir, "loss_history.npy"), losses)
+
+        # --- Save .csv ---
+        df = pd.DataFrame(history)
+        csv_path = os.path.join(self.exp_dir, "history.csv")
+        df.to_csv(csv_path, index=False)
+
 
     def summarize(self, text):
         with open(os.path.join(self.exp_dir, "summary.txt"), "w") as f:
@@ -73,7 +92,8 @@ def run_experiment(lc, filters, time_span,
     hc = hyper_config
 
     # prepare experiment folder
-    logger = ExperimentLogger(base_dir=exp_base_dir)
+    logger = ExperimentLogger(base_dir=exp_base_dir, filters=filters,
+                              time_span=time_span)
 
     # torchenize
     torchenizer = tp.Torchenizer(lc_subset, ycol="loglum", device=device)
