@@ -1,62 +1,106 @@
 import sys
 sys.path.append("/tf/ProjectGabriel/pilca")
 
-import numpy as np
-import pandas as pd
-from lightcurve_fitting import models, filters, lightcurve
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-import importlib
-from utils.utils import load_lc
-from utils.utils import light_curve_plot
-import torch
-import utils.torchphysics as tp
-import utils.utils as ut
-# import lc
 import os
+import json
+import datetime
+import numpy as np
+import torch
+import pandas as pd
+
+import utils.torchphysics as tp
+import utils.utils as ut 
+import torch
+from lightcurve_fitting import filters as flc
+
+
 torch.set_default_dtype(torch.float64)
 
 
-all_filters = ["z", "y", "i", "r", "g", "u", "uvw1"]  # from red to UV
-filter_combinations = [all_filters[:i+1] for i in range(len(all_filters))]
 
-max_days = 10
-time_spans = np.arange(1, max_days + 1)  # [1, 2, ..., 10]
 
-def run_experiment(filters, time_span, lc, true_params):
+class ExperimentLogger:
+    def __init__(self, base_dir="experiments", filters=None, time_span=None):
+        os.makedirs(base_dir, exist_ok=True)
+        # timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        suffix = ""
+        if filters is not None:
+            suffix += f"_filters-{'-'.join(filters)}"
+        if time_span is not None:
+            suffix += f"_time-{time_span}d"
+        self.exp_dir = os.path.join(base_dir, f"exp_{suffix}")
+        os.makedirs(self.exp_dir, exist_ok=True)
+
+    def save_config(self, config, name=None):
+        if not name:
+            name = "exp_config.json"
+        with open(os.path.join(self.exp_dir, name), "w") as f:
+            json.dump(config, f, indent=4)
+
+    def save_model(self, model):
+        torch.save(model.state_dict(), os.path.join(self.exp_dir, "model_weights.pth"))
+
+    def save_history(self, history):
+        np.save(os.path.join(self.exp_dir, "loss_history.npy"), history["loss"])
+
+    def save_samples(self, samples):
+        np.save(os.path.join(self.exp_dir, "samples.npy"), samples)
+
+    def summarize(self, text):
+        with open(os.path.join(self.exp_dir, "summary.txt"), "w") as f:
+            f.write(text)
+
+
+
+
+def get_filter_mask(lc, filters):
+    filter_objects = [flc.filtdict[f] for f in filters]
+    fmask = np.in1d(lc["filter"].value, filter_objects)
+    return fmask
+
+def run_experiment(lc, filters, time_span,
+                   device, exp_base_dir, hyper_config):
     """
     Run one experiment for given filter subset and time span (days).
     """
     # build time grid subset (from day 0 to time_span)
-    mask_time = lc["MJD"] <= (lc["MJD"].min() + time_span)
-    lc_subset = lc[mask_time & lc["filter"].isin(filters)]
+    # mask_time = lc["MJD"] <= (lc["MJD"].min() + time_span)
+    lc_subset = lc.where(MJD_max=lc["MJD"].min() + time_span)
+    lc_subset = lc_subset[get_filter_mask(lc_subset, filters)]
+    #[mask_time & lc["filter"].isin(filters)]
+
+    # hyper config
+    hc = hyper_config
 
     # prepare experiment folder
-    logger = ExperimentLogger(base_dir="experiments")
+    logger = ExperimentLogger(base_dir=exp_base_dir)
 
     # torchenize
     torchenizer = tp.Torchenizer(lc_subset, ycol="loglum", device=device)
-    X_DATA, filters_mask, ufilters = torchenizer.get_xdata(max_phase=time_span, t0_offset=3)
+    X_DATA, filters_mask, ufilters = torchenizer.get_xdata(max_phase=time_span, 
+                                                           t0_offset=hc["data"]["t0_offset"])
 
     # build and train model (same as before)
     nn_model = tp.MultiFilterBNN(x_data=X_DATA, filters_mask=filters_mask,
-                                 param_dim=4, hidden_dim=32).to(device)
+                                 param_dim=hc["model"]["param_dim"], hidden_dim=hc["model"]["hidden_dim"]).to(device)
     criterion = tp.ModifiedSC4Loss(ufilters=ufilters,
                                    z=lc.meta["redshift"],
-                                   mode="mean_param",
+                                   mode=hc["training"]["loss_mode"],
                                    min_t0=torch.min(X_DATA[:,0])-1e-5)
-    optimizer = torch.optim.Adam(nn_model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
+    optimizer = torch.optim.Adam(nn_model.parameters(), lr=hc["learning_rate"])
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
+                                                 step_size=hc["scheduler"]["step_size"],
+                                                 gamma=hc["scheduler"]["gamma"])
 
-    trainer = tp.Trainer(model=nn_model, criterion=criterion, epochs=2000,
-                         n_samples_loss=30, optimizer=optimizer,
+    trainer = tp.Trainer(model=nn_model, criterion=criterion, epochs=hc["training"]["epochs"],
+                         n_samples_loss=hc["training"]["n_samples_loss"], optimizer=optimizer,
                          scheduler=scheduler, verbose_step=200,
                          save_dir=os.path.join(logger.exp_dir, "model_weights.pth"))
 
     history = trainer.train()
 
     # sample posterior
-    samples = torch.stack([nn_model() for _ in range(1000)]).detach().cpu().numpy()
+    samples = torch.stack([nn_model() for _ in range(hc["sampling"]["n_samples_save"])]).detach().cpu().numpy()
 
     # save everything
     logger.save_model(nn_model)
@@ -64,72 +108,94 @@ def run_experiment(filters, time_span, lc, true_params):
     logger.save_samples(samples)
     logger.save_config({
         "filters": filters,
-        "time_span": time_span,
-        "true_params": list(true_params),
-        "n_points": len(lc_subset),
-        "param_dim": 4,
-        "epochs": 2000
+        "time_span": time_span+0.,
+        "n_points": len(lc_subset)+0.,
     })
     logger.summarize(f"Filters={filters}, Time={time_span}d, Final loss={history['loss'][-1]:.4f}")
 
 
+
 def main():
 
-    builder = ut.LCBuilder(model_name="sc4",
-                       model_parameters=[1.26491106, 2., 4.03506331, 2.5],
-                       model_units=[1,1,1,1],
-                       seed=42)
+    IS_A_TEST = True
 
-    lc = builder.build_sim_lc(mjd_array=np.linspace(3, 13, 300),
-                            filters_list=["g", "r", "i"],
-                            redshift=0.00526,
-                            dlum_factor = 1e-1,
-                            dm=31.1,
-                            dL=19.,
-                            dLerr=2.9)
-    
+
+    # --- define cumulative filter sets (z → UV) ---
+
+    all_filters = ["z", "y"]#, "i", "r", "g", "u", "uvw1"]  # from red to UV
+    mjd_array = np.linspace(3, 13, 300)
+
+
+    filter_combinations = [all_filters[:i+1] for i in range(len(all_filters))]
+
+    max_days = 2
+    time_spans = np.arange(1, max_days + 1)  # [1, 2, ..., 10]
+
+    model_parameters = [1.2, 2., 4.0, 2.5]
+
+    # --- setup light curve builder ---
+    builder = ut.LCBuilder(
+        model_name="sc4",
+        model_parameters=model_parameters,
+        model_units=[1,1,1,1],
+        seed=42
+    )
+
+    lc = builder.build_sim_lc(
+        mjd_array=mjd_array,
+        filters_list=all_filters,  # full set
+        redshift=0.00526,
+        dlum_factor=1e-1,
+        dm=31.1,
+        dL=19.,
+        dLerr=2.9
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    torchenizer = tp.Torchenizer(lc, ycol="loglum", device=device)
+    param_dir_name = "-".join([f"{str(v).replace('.', 'p')}" for v in model_parameters])
 
-    X_DATA, filters_mask, ufilters = torchenizer.get_xdata(max_phase=8, t0_offset=3)
+    if IS_A_TEST:
+        exp_base_dir = os.path.join(ut.storage_parent_path, "experiments", "TEST_0")
 
-    nn_model_name = "bnn_pilca.pth"
-    model_save_dir = os.path.join(ut.storage_parent_path, "models", nn_model_name)
+    else:
+        exp_base_dir = os.path.join(ut.storage_parent_path, "experiments", param_dir_name)
 
-    nn_model = tp.MultiFilterBNN(x_data=X_DATA,
-                                filters_mask=filters_mask,
-                                param_dim=4,
-                                hidden_dim=32).to(device)
+    hyper_log = ExperimentLogger(exp_base_dir)
+    hyper_config = {
+                    "learning_rate": 1e-3,
+                    "scheduler": {
+                        "step_size": 500,
+                        "gamma": 0.5
+                    },
+                    "training": {
+                        "epochs": 2000,
+                        "n_samples_loss": 30,
+                        "loss_mode": "mean_param"
+                    },
+                    "sampling": {
+                        "n_samples_save": 1000
+                    },
+                    "model": {
+                        "hidden_dim": 32,
+                        "param_dim": 4
+                    },
+                    "data": {
+                        "t0_offset": 3
+                    }
+                }
+    
+    hyper_log.save_config(hyper_config, name="hyper_config.json")
 
-    criterion = tp.ModifiedSC4Loss(ufilters=ufilters,
-                                z=lc.meta["redshift"],
-                                mode="mean_param",
-                                min_t0=torch.min(X_DATA[:,0])-1e-5)
-    lr=1e-3
-    optimizer = torch.optim.Adam(nn_model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
-                                                step_size=500, gamma=0.5)
-
-    trainer = tp.Trainer(model=nn_model,
-                        criterion=criterion,
-                        epochs=2000,
-                        n_samples_loss=30,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        verbose_step=100,
-                        save_dir=model_save_dir)
-
-    history = trainer.train()
-
-    samples = []
-    for i in range(1000):
-        samples.append(nn_model())
-    samples = torch.stack(samples).detach().cpu().numpy() # shape [N_samples, 5]
-
-
-    return
+    # --- run experiments ---
+    for filt_subset in filter_combinations:
+        for tspan in time_spans:
+            print(f"\n🔹 Running experiment: filters={filt_subset}, time_span={tspan} days")
+            run_experiment(lc, filt_subset, tspan,
+                           device, exp_base_dir,
+                           hyper_config)
+            
 
 if __name__=="__main__":
     main()
