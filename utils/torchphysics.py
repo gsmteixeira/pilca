@@ -23,12 +23,72 @@ c = const.c.to(u.angstrom * u.THz).value
 c3 = (4. * np.pi * const.sigma_sb.to("erg s-1 Rsun-2 kK-4").value) ** -0.5 / 1000.  # Rsun --> kiloRsun
 c4 = 1. / (4. * np.pi * u.Mpc.to(u.m) ** 2.)
 
+
+class Torchenizer:
+    def __init__(self, lc, ycol="lum", device="cpu"):
+        """
+        Converts a light curve DataFrame into torch tensors for model input.
+
+        Args:
+            lc: pandas.DataFrame with columns ['MJD', 'filter', 'lum', 'dlum', ...]
+            ycol: name of the luminosity column (default: 'lum')
+            device: 'cpu' or 'cuda'
+        """
+        self.lc = lc
+        self.ycol = ycol
+        self.device = device
+
+    def get_xdata(self, max_phase=8, t0_offset=3, filters_to_use=None):
+        """
+        Prepare X_DATA and filter masks for the model.
+
+        Returns:
+            X_DATA (torch.Tensor): shape [N_points, 3] -> [MJD, log10(L), dL/L/log(10)]
+            filters_mask (torch.BoolTensor): [N_filters, N_points]
+            ufilters (np.ndarray): unique filters
+        """
+        lc = self.lc.copy()
+
+        # --- Compute time relative to t0 ---
+        MJD = lc["MJD"].value - lc["MJD"].min() + t0_offset
+        MJD = np.clip(MJD, 0, max_phase+t0_offset)
+
+
+
+        # --- Compute luminosity quantities ---
+        LUM = lc[self.ycol].value#np.log10(lc[self.ycol].value)
+        DLUM = lc["d"+self.ycol].value #lc["dlum"].value / lc[self.ycol].value / np.log(10)
+
+        # --- Stack inputs ---
+        X_DATA = np.hstack([
+            MJD.reshape(-1, 1),
+            LUM.reshape(-1, 1),
+            DLUM.reshape(-1, 1)
+        ])
+
+        # --- Build filter masks ---
+        ufilters = np.unique(lc["filter"].value)
+        if filters_to_use:
+            ufilters = np.unique(filters_to_use)
+
+
+        filters_mask = torch.zeros((len(ufilters), len(lc)), dtype=torch.bool)
+        for i, f in enumerate(ufilters):
+            filters_mask[i] = torch.tensor(lc["filter"].value == f)
+
+        # --- Convert to tensors on the target device ---
+        X_DATA = torch.tensor(X_DATA, device=self.device)
+        filters_mask = filters_mask.to(self.device)
+
+        return X_DATA, filters_mask, ufilters
+
+
 def power(base, exp):
     """Power function that returns zero for any nonpositive base"""
     base, exp = torch.as_tensor(base), torch.as_tensor(exp)
     broadcast_shape = torch.broadcast_shapes(base.shape, exp.shape)
-    
-    zeros = torch.zeros(broadcast_shape, dtype=torch.float32)
+    # print(broadcast_shape)
+    zeros = torch.zeros(broadcast_shape).to(base.device)
     positive = base > 0
     power = torch.pow(base, exp)
     
@@ -49,17 +109,20 @@ def blackbody_to_filters(f, T, R, z=0., cutoff_freq=torch.inf, ebv=0.):
     #     y_fit = torch.stack([f.synthesize(planck_fast, t, r, cutoff_freq, z=z, ebv=ebv) 
     #                          for f, t, r in zip(filters, T, R)])
     # else:
-    y_fit = synthesize(f, planck_fast, T, R, cutoff_freq, z=z, ebv=ebv) 
+    y_fit = synthesize(f, planck_fast, T, R, cutoff_freq, z=z, ebv=ebv, device=T.device) 
 
     return y_fit
 
-def extinction_law(freq, ebv, rv=3.1):
+def extinction_law(freq, ebv, device="cpu", rv=3.1):
     
-    freq = torch.as_tensor(freq)
-    ebv = torch.atleast_1d(torch.as_tensor(ebv))
-    
-    A = torch.stack([torch.tensor(fitzpatrick99(c / freq.detach().numpy(), rv * e, rv)) for e in ebv]).requires_grad_(False) 
+    freq = torch.as_tensor(freq).to(device)
+    ebv = torch.atleast_1d(torch.as_tensor(ebv)).to(device)
+    # print(torch.tensor(fitzpatrick99(c / freq.detach().cpu().numpy(), rv * e, rv)))
+    # aaaaa
+    A = torch.stack([torch.tensor(fitzpatrick99(c / freq.detach().cpu().numpy(), rv * e, rv)) for e in ebv]).requires_grad_(False).to(device)
     # A = np.squeeze([fitzpatrick99(c / freq, rv * e, rv) for e in np.atleast_1d(ebv)])
+    # print(A.device)
+    # aaaa
     return 10. ** (A / -2.5)
 
 def planck_fast(nu, T, R, cutoff_freq=torch.inf):
@@ -77,13 +140,15 @@ def planck_fast(nu, T, R, cutoff_freq=torch.inf):
     return result
 
 
-def synthesize(f, spectrum, *args, z=0., ebv=0., **kwargs):
+def synthesize(f, spectrum, *args, z=0., ebv=0., device="cpu", **kwargs):
         
-        freq = torch.tensor(f.trans['freq'].value * (1. + z)).requires_grad_(False) 
+        freq = torch.tensor(f.trans['freq'].value * (1. + z)).requires_grad_(False).to(device)
         # print(spectrum(freq, *args, **kwargs) )
         # aaa
-        return torch.trapz(spectrum(freq, *args, **kwargs) * extinction_law(freq, ebv)
-                        * torch.tensor(f.trans['T_norm_per_freq'].data), torch.tensor(f.trans['freq'].data, requires_grad=False))
+        # print(extinction_law(freq, ebv, device))
+        # aaaa
+        return torch.trapz(spectrum(freq, *args, **kwargs) * extinction_law(freq, ebv, device)
+                        * torch.tensor(f.trans['T_norm_per_freq'].data).to(device), torch.tensor(f.trans['freq'].data, requires_grad=False).to(device))
 
 class ShockCooling4():
     """
@@ -148,7 +213,7 @@ class ShockCooling4():
         u.d,
     ]
 
-    def __init__(self, z):
+    def __init__(self, z, device="cpu"):
         # super().__init__(lc, redshift=redshift)
         self.z = z
         self.A = 0.9
@@ -160,6 +225,7 @@ class ShockCooling4():
         self.t_br_0 = 0.036  # d (0.86 h)
         self.t_07eV_0 = 6.86  # d
         self.t_tr_0 = 19.5  # d
+        self.device = device
 
     def temperature_radius(self, t_in, v_s, M_env, f_rho_M, R, t_exp=0., kappa=1.):
         t_br = self.t_br_0 * R ** 1.26 * v_s ** -1.13 * f_rho_M ** -0.13  # Eq. A5
@@ -172,15 +238,19 @@ class ShockCooling4():
         T_col_br = self.T_col_br_0 * R ** -0.32 * v_s ** 0.58 ** f_rho_M ** 0.03 * kappa ** -0.22  # Eq. A7
         # T_col_br = self.T_col_br_0 * R ** -0.32 * v_s ** 0.58 ** f_rho_M ** 0.03 * kappa ** -0.22  # Eq. A7
 
-        t_tr = self.t_tr_0 * torch.sqrt(kappa * M_env / v_s)  # Eq. A9
+        t_tr = self.t_tr_0 * torch.sqrt(kappa * M_env / v_s)#.to(self.device)  # Eq. A9
         # t_tr = self.t_tr_0 * np.sqrt(kappa * M_env / v_s)  # Eq. A9
 
         t = torch.reshape(torch.as_tensor(t_in), (-1, 1)) - t_exp
+        # print(t)
+        # aaaaaa
 
         ttilde = t / t_br
-
+        # print(power(ttilde, -4. / 3.))
+        # aaaaa
         L = L_br * (power(ttilde, -4. / 3.) +
                     self.A * torch.exp(-power(self.a * t / t_tr, self.alpha)) * power(ttilde, -0.17))  # Eq. A1
+ 
         # L = L_br * (power(ttilde, -4. / 3.) +
         #             self.A * np.exp(-power(self.a * t / t_tr, self.alpha)) * power(ttilde, -0.17))
         # L = L_br * (power(ttilde, -4. / 3.) +
@@ -262,6 +332,8 @@ class ShockCooling4():
         return np.minimum(t_07eV, t_tr / self.a) + t_exp  # Eq. A3
     
 
+
+
 class SC4Loss(nn.Module):
     def __init__(self, sc4model, ufilters):
         """
@@ -313,18 +385,73 @@ class SC4Loss(nn.Module):
 
         return loss+penalty#.mean( )+
 
+
+class Trainer():
+    def __init__(self, model,
+                  criterion, epochs,
+                  n_samples_loss, 
+                  optimizer,scheduler,
+                  verbose_step=100,
+                  save_dir=""):
+
+        self.model = model
+        self.criterion = criterion
+        self.epochs = epochs
+        self.n_samples_loss = n_samples_loss
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.verbose_step = verbose_step
+        self.save_dir = save_dir
+        
+    def train(self,):
+        history = {}
+        history["loss"] = []
+        for epoch in range(self.epochs):
+            self.optimizer.zero_grad()
+
+            outputs = torch.stack([self.model().squeeze() for i in range(self.n_samples_loss)])
+            outputs_mean = outputs.mean(0)
+            loss = self.criterion(outputs, self.model.x_data, self.model.filters_mask)
+            loss.backward()
+            self.optimizer.step()
+            self.scheduler.step()
+            if self.verbose_step:
+                if epoch % self.verbose_step == 0:
+                    print_outputs(outputs_mean, loss, epoch)
+            history["loss"].append(loss)
+
+        torch.save(self.model.state_dict(), self.save_dir)
+        return history
+
 class ModifiedSC4Loss(nn.Module):
-    def __init__(self, sc4model, ufilters):
+    def __init__(self, ufilters, z, mode="mean_param"):
         """
         Custom Weighted Mean Squared Error Loss
         :param weight: A tensor of weights for each sample (optional).
         """
         super(ModifiedSC4Loss, self).__init__()
-        self.sc4model = sc4model
+        self.sc4model = ShockCooling4(z=z, device=device)#sc4model
         self.ufilters = ufilters
+        self.mode = mode
         # self.weight = weight
 
     def forward(self, outputs, targets, filters_mask):
+
+        y_true = self.get_y_true(targets, filters_mask)
+
+        if self.mode=="mean_param":
+            outputs_mean = outputs.mean(0)
+            y_fit = self.get_yfit(outputs_mean, targets, filters_mask)
+        if self.mode=="mean_model":
+            y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+            y_fit = y_many.mean(0)#
+        
+        loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
+        penalty = self.get_penalty(outputs_mean)
+        return loss+penalty
+        
+    
+    def get_yfit(self, outputs, targets, filters_mask):
         """
         Compute the weighted MSE loss.
         :param predictions: Model outputs (torch tensor).
@@ -489,6 +616,7 @@ class MultiFilterMDN(nn.Module):
             x_f = x[self.filters_mask[i_f]]  # [n_points_i, n_features]
             # flatten: concatenate all time samples for this filter
             x_f_flat = x_f.flatten().unsqueeze(0)  # shape [1, n_points_i * n_features]
+
             h_f = net(x_f_flat)
             filter_latents.append(h_f)
 
