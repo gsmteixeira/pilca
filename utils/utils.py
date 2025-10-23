@@ -22,13 +22,19 @@ storage_parent_path = "/tf/astrodados2/pilca.storage/"
 class LCBuilder():
     def __init__(self, model_name="sc4",
                   model_parameters=[1.26491106, 2., 4.03506331, 2.5],
-                  model_units=[1,1,1,1],):
+                  model_units=[1,1,1,1],
+                  seed=42):
 
         self.model_name = model_name
         self.model_parameters = model_parameters
         self.model_units = model_units
         self.model_inputs = np.array(self.model_parameters)*np.array(self.model_units)
+        self.seed = seed
+        self._set_seed()
 
+    def _set_seed(self):
+
+        np.random.seed(self.seed)
 
     def build_sim_lc(self, mjd_array=np.linspace(3, 13, 300),
                     filters_list=["g", "r", "i"],
@@ -162,7 +168,8 @@ def light_curve_plot(lc, offset=0.5, ycol="lum"):
     face_color = []
     
     # Define offsets for each filter (spaced by 0.5 mag)
-    offsets = {filt: -10 + i * offset for i, filt in enumerate(ufilts[::-1])}
+    scale = 1e19 if ycol=="lum" else 1#np.mean(lc[ycol])
+    offsets = {filt: -0 + i * offset*scale for i, filt in enumerate(ufilts[::-1])}
 
     fig, ax = plt.subplots(figsize=(8, 6), dpi=200)  # Set figure size
 
@@ -215,7 +222,9 @@ def pilca_light_curve_plot(lc, offset=0.5, pilcas=None, ufilters=None):
     face_color = []
     
     # Define offsets for each filter (spaced by 0.5 mag)
-    offsets = {filt: -10 + i * offset for i, filt in enumerate(ufilts[::-1])}
+    offsets = {filt: -0 + i * offset for i, filt in enumerate(ufilts[::-1])}
+
+
 
     fig, ax = plt.subplots(figsize=(8, 6), dpi=200)  # Set figure size
 
@@ -225,10 +234,10 @@ def pilca_light_curve_plot(lc, offset=0.5, pilcas=None, ufilters=None):
         
         # Extract values and apply offset
         mjd_filt = lc['MJD'][fmask]
-        y_filt = lc['lum'][fmask] + offsets[filt]  # Apply offset
+        y_filt = lc['lum'][fmask] #+ offsets[filt]  # Apply offset
         y_filt_err = lc['dlum'][fmask]
         if pilcas:
-            y_pilca = pilcas[i]
+            y_pilca = pilcas[i]#+ offsets[filt]
         # Select marker style based on index
         marker = markers[i % len(markers)]
         
@@ -238,11 +247,11 @@ def pilca_light_curve_plot(lc, offset=0.5, pilcas=None, ufilters=None):
         # ax.errorbar(mjd_filt, y_filt, yerr=y_filt_err,
         #  fmt=marker, label=f"{filt} (offset: {offsets[filt]:.1g})",
         #  capsize=3, **style)
-        ax.plot(mjd_filt, np.log10(y_filt), 
+        ax.plot(mjd_filt, np.log10(y_filt)+ offsets[filt], 
          ls="-", label=f"{filt} (offset: {offsets[filt]:.1g})", **style)
         # print(filt)
         # aaa
-        ax.plot(mjd_filt, torch.log10(y_pilca), c=style["mfc"], lw=2, ls="--")
+        ax.plot(mjd_filt, torch.log10(y_pilca)+ offsets[filt], c=style["mfc"], lw=2, ls="--")
 
     # Aesthetics
     ax.set_xlabel("MJD")

@@ -402,10 +402,11 @@ class Trainer():
         self.scheduler = scheduler
         self.verbose_step = verbose_step
         self.save_dir = save_dir
+        self.history = {}
         
     def train(self,):
-        history = {}
-        history["loss"] = []
+        # history = {}
+        loss_list = []
         for epoch in range(self.epochs):
             self.optimizer.zero_grad()
 
@@ -418,13 +419,13 @@ class Trainer():
             if self.verbose_step:
                 if epoch % self.verbose_step == 0:
                     print_outputs(outputs_mean, loss, epoch)
-            history["loss"].append(loss)
-
+            loss_list.append(loss)
+        self.history["loss"] = torch.tensor(loss_list).detach().cpu().numpy()
         torch.save(self.model.state_dict(), self.save_dir)
-        return history
+        return self.history
 
 class ModifiedSC4Loss(nn.Module):
-    def __init__(self, ufilters, z, mode="mean_param"):
+    def __init__(self, ufilters, z, mode="mean_param", min_t0=2.99):
         """
         Custom Weighted Mean Squared Error Loss
         :param weight: A tensor of weights for each sample (optional).
@@ -433,6 +434,7 @@ class ModifiedSC4Loss(nn.Module):
         self.sc4model = ShockCooling4(z=z, device=device)#sc4model
         self.ufilters = ufilters
         self.mode = mode
+        self.min_t0 = min_t0
         # self.weight = weight
 
     def forward(self, outputs, targets, filters_mask):
@@ -470,7 +472,8 @@ class ModifiedSC4Loss(nn.Module):
         R = outputs[2]         # Radius
         t_exp = outputs[3] 
         # penalty = 1e-2*(torch.relu(t_exp - 3) ** 2) + 1e-4*(torch.relu(R - 6) ** 2) + 1e-4*(torch.relu(1/(M_env+0.1)))
-        t_exp = torch.clip(t_exp, max=2.9999)
+        
+        t_exp = torch.clip(t_exp, max=self.min_t0)
         t_exp = torch.clip(t_exp, min=1e-3) 
         
         # sigma = outputs[5] 
@@ -514,8 +517,8 @@ class ModifiedSC4Loss(nn.Module):
         v_s, M_env, R, t_exp = outputs
 
         # Penalize out-of-bounds values
-        penalty = 0.0 + 1e-2*(torch.relu(R - 6) ** 2)
-        penalty += 1e-5 * (torch.relu(t_exp - 3) ** 2)      # upper bound for t_exp
+        penalty = 0.0# + 1e-2*(torch.relu(R - 6) ** 2)
+        penalty += 1e-5 * (torch.relu(t_exp - self.min_t0) ** 2)      # upper bound for t_exp
         penalty += 1e-4 * (torch.relu(-v_s) ** 2)           # penalize v_s < 0
         penalty += 1e-4 * (torch.relu(-M_env) ** 2)         # penalize M_env < 0
         # penalty += 1e-4 * (torch.relu(-f_rho_M) ** 2)       # penalize f_rho_M < 0
