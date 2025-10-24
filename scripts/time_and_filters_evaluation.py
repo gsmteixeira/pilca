@@ -28,7 +28,12 @@ class ExperimentLogger:
             suffix += f"_filters-{'-'.join(filters)}"
         if time_span is not None:
             suffix += f"_time-{time_span}d"
-        self.exp_dir = os.path.join(base_dir, f"exp_{suffix}")
+        # name = "exp_" if filters else "" 
+        if filters:
+            self.exp_dir = os.path.join(base_dir, f"exp_{suffix}")
+        else:
+            self.exp_dir = base_dir
+        
         os.makedirs(self.exp_dir, exist_ok=True)
 
     def save_config(self, config, name=None):
@@ -142,13 +147,13 @@ def main():
 
     # --- define cumulative filter sets (z → UV) ---
 
-    all_filters = ["z", "y"]#, "i", "r", "g", "u", "uvw1"]  # from red to UV
-    mjd_array = np.linspace(3, 13, 300)
+    all_filters = ["z", "y", "i", "r", "g", "u", "uvw1"]  # from red to UV
+    mjd_array = np.linspace(3, 13, 600)
 
 
     filter_combinations = [all_filters[:i+1] for i in range(len(all_filters))]
 
-    max_days = 2
+    max_days = 10
     time_spans = np.arange(1, max_days + 1)  # [1, 2, ..., 10]
 
     model_parameters = [1.2, 2., 4.0, 2.5]
@@ -165,7 +170,7 @@ def main():
         mjd_array=mjd_array,
         filters_list=all_filters,  # full set
         redshift=0.00526,
-        dlum_factor=1e-1,
+        dlum_factor=1e-1/2,
         dm=31.1,
         dL=19.,
         dLerr=2.9
@@ -209,13 +214,19 @@ def main():
     hyper_log.save_config(hyper_config, name="hyper_config.json")
 
     # --- run experiments ---
-    for filt_subset in filter_combinations:
+    for filt_subset in filter_combinations[1:]:
         for tspan in time_spans:
-            print(f"\n🔹 Running experiment: filters={filt_subset}, time_span={tspan} days")
-            run_experiment(lc, filt_subset, tspan,
+            print(f"\n Running experiment: filters={filt_subset}, time_span={tspan} days")
+            try:
+                # aa
+                run_experiment(lc, filt_subset, tspan,
                            device, exp_base_dir,
                            hyper_config)
-            
+                
+            except:
+                raise Warning(f"Failed in experiment \n filters-{'-'.join(filt_subset)}; t={tspan}d\n")
+                # aa
+                continue
 
 if __name__=="__main__":
     main()
