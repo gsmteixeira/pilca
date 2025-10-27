@@ -170,7 +170,7 @@ def main():
         mjd_array=mjd_array,
         filters_list=all_filters,  # full set
         redshift=0.00526,
-        dlum_factor=1e-1/2,
+        dlum_factor=1e-1/2 ,
         dm=31.1,
         dL=19.,
         dLerr=2.9
