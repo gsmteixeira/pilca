@@ -392,7 +392,11 @@ class Trainer():
                   n_samples_loss, 
                   optimizer,scheduler,
                   verbose_step=100,
-                  save_dir=""):
+                  save_dir="",
+                  es_kwargs={"use_es":False,
+                             "patience":20,
+                             "save_best_loss":True},
+                  change_loss=False):
 
         self.model = model
         self.criterion = criterion
@@ -403,10 +407,16 @@ class Trainer():
         self.verbose_step = verbose_step
         self.save_dir = save_dir
         self.history = {}
+        self.es_use = es_kwargs["use_es"]
+        self.es_patience = es_kwargs["patience"]
+        self.es_save_best = es_kwargs["save_best_loss"]
+        self.change_loss = change_loss
         
     def train(self,):
         # history = {}
         loss_list = []
+        es_counter = 0
+        es_last_loss = torch.inf#.to(self.model.device)
         for epoch in range(self.epochs):
             self.optimizer.zero_grad()
 
@@ -416,12 +426,33 @@ class Trainer():
             loss.backward()
             self.optimizer.step()
             self.scheduler.step()
+
+            if self.es_use:
+                if loss<es_last_loss:
+                    counter = 0
+                    es_last_loss = loss
+                    torch.save(self.model.state_dict(), self.save_dir.replace(".pth", f"_best_loss_epoch_{epoch}.pth"))
+                else:
+                    counter+=1
+
+                if counter==self.es_patience:
+                    if self.change_loss:
+                        if self.criterion.mode=="mean_param":
+                            self.criterion.mode = "mean_model"
+                            counter=0
+                        else:
+                            break
+                    else:
+                        break
+
             if self.verbose_step:
                 if epoch % self.verbose_step == 0:
                     print_outputs(outputs_mean, loss, epoch)
             loss_list.append(loss)
+        if not self.es_use:
+            torch.save(self.model.state_dict(), self.save_dir)
         self.history["loss"] = torch.tensor(loss_list).detach().cpu().numpy()
-        torch.save(self.model.state_dict(), self.save_dir)
+        
         return self.history
 
 class ModifiedSC4Loss(nn.Module):
@@ -440,15 +471,30 @@ class ModifiedSC4Loss(nn.Module):
     def forward(self, outputs, targets, filters_mask):
 
         y_true = self.get_y_true(targets, filters_mask)
-
+        outputs_mean = outputs.mean(0)
         if self.mode=="mean_param":
-            outputs_mean = outputs.mean(0)
             y_fit = self.get_yfit(outputs_mean, targets, filters_mask)
+            loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
         if self.mode=="mean_model":
             y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
             y_fit = y_many.mean(0)#
+            y_std = y_many.std(0)#, unbiased=False)
+            logvar_penalty = 5*torch.mean(torch.relu(torch.mean(targets[:,2])-y_std))
+            # y_std = torch.clamp(y_std, torch.mean(targets[:,2]))
+            logvar = torch.log(y_std**2+1e-8)
+            loss = 0.5 * (logvar + (y_true - y_true)**2 / y_std**2)
+            print("logvar = ",torch.mean(logvar), "std = ", torch.mean(y_std))
+            loss = loss.mean() + logvar_penalty
+        if self.mode=="both":
+            y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+            y_fit = y_many.mean(0)#
+            y_std = y_many.std(0)#, unbiased=False)
+            y_std = torch.clamp(y_std, torch.mean(targets[:,2]))
+            loss_var = 0.5 * (torch.log(y_std**2+1e-8) + (y_true - y_true)**2 / y_std**2)
+            loss_mse = (y_true - y_fit)**2
+            loss = loss_var.mean() + loss_mse.mean()
         
-        loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
+        # loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
         penalty = self.get_penalty(outputs_mean)
         return loss+penalty
         
@@ -474,7 +520,7 @@ class ModifiedSC4Loss(nn.Module):
         # penalty = 1e-2*(torch.relu(t_exp - 3) ** 2) + 1e-4*(torch.relu(R - 6) ** 2) + 1e-4*(torch.relu(1/(M_env+0.1)))
         
         t_exp = torch.clip(t_exp, max=self.min_t0)
-        t_exp = torch.clip(t_exp, min=1e-3) 
+        # t_exp = torch.clip(t_exp, min=1e-3) 
         
         # sigma = outputs[5] 
         loss = 0
@@ -517,13 +563,13 @@ class ModifiedSC4Loss(nn.Module):
         v_s, M_env, R, t_exp = outputs
 
         # Penalize out-of-bounds values
-        penalty = 0.0# + 1e-2*(torch.relu(R - 6) ** 2)
-        penalty += 1e-5 * (torch.relu(t_exp - self.min_t0) ** 2)      # upper bound for t_exp
-        penalty += 1e-4 * (torch.relu(-v_s) ** 2)           # penalize v_s < 0
-        penalty += 1e-4 * (torch.relu(-M_env) ** 2)         # penalize M_env < 0
+        penalty = 0.0 + 1e-2*(torch.relu(R - 10) ** 2)
+        penalty += 1e-2 * (torch.relu(t_exp - self.min_t0) ** 2)      # upper bound for t_exp
+        penalty += 1e-2 * (torch.relu(-v_s) ** 2)           # penalize v_s < 0
+        penalty += 1e-2 * (torch.relu(-M_env) ** 2)         # penalize M_env < 0
         # penalty += 1e-4 * (torch.relu(-f_rho_M) ** 2)       # penalize f_rho_M < 0
-        penalty += 1e-4 * (torch.relu(-R) ** 2)             # penalize R < 0
-        penalty += 1e-4 * (torch.relu(-t_exp) ** 2)         # penalize t_exp < 0
+        penalty += 1e-2 * (torch.relu(-R) ** 2)             # penalize R < 0
+        penalty += 1e-2 * (torch.relu(-t_exp) ** 2)         # penalize t_exp < 0
 
         return penalty
 
@@ -565,6 +611,151 @@ def print_outputs(outputs, loss, step):
     print(f"Explosion time (t_exp):   {t_exp.item():.4f}")
     print(f"Loss:                     {loss.item():.6f}")
     print("-" * 40)
+
+
+class BayesianLinear(nn.Module):
+    def __init__(self, in_features, out_features, prior_var=1.0):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.prior_var = prior_var
+
+        # variational parameters
+        self.weight_mu = nn.Parameter(torch.Tensor(out_features, in_features).normal_(0, 0.1))
+        self.weight_rho = nn.Parameter(torch.Tensor(out_features, in_features).fill_(-3))
+        self.bias_mu = nn.Parameter(torch.Tensor(out_features).normal_(0, 0.1))
+        self.bias_rho = nn.Parameter(torch.Tensor(out_features).fill_(-3))
+
+        self.log_prior = 0
+        self.log_variational_posterior = 0
+
+    def forward(self, x):
+        # reparameterization trick
+        weight_sigma = torch.log1p(torch.exp(self.weight_rho))
+        bias_sigma = torch.log1p(torch.exp(self.bias_rho))
+        eps_w = torch.randn_like(weight_sigma)
+        eps_b = torch.randn_like(bias_sigma)
+
+        weight = self.weight_mu + weight_sigma * eps_w
+        bias = self.bias_mu + bias_sigma * eps_b
+
+        # log probs for ELBO
+        prior = torch.distributions.Normal(0, self.prior_var**0.5)
+        var_post_w = torch.distributions.Normal(self.weight_mu, weight_sigma)
+        var_post_b = torch.distributions.Normal(self.bias_mu, bias_sigma)
+
+        self.log_prior = prior.log_prob(weight).sum() + prior.log_prob(bias).sum()
+        self.log_variational_posterior = var_post_w.log_prob(weight).sum() + var_post_b.log_prob(bias).sum()
+
+        return F.linear(x, weight, bias)
+
+
+class MultiFilterBNN(nn.Module):
+    def __init__(self, x_data, filters_mask, param_dim=5, hidden_dim=64, n_filter_layers=1, n_combined_layers=1,):
+        super().__init__()
+        self.param_dim = param_dim
+        self.num_filters = filters_mask.shape[0]
+        self.filters_mask = filters_mask
+        self.x_data = x_data
+
+        self.filter_nets = nn.ModuleList()
+        for i_f in range(self.num_filters):
+            n_points = int(torch.sum(self.filters_mask[i_f]).item())
+            input_dim = n_points * self.x_data.shape[1]
+            self.filter_nets.append(
+                nn.Sequential(
+                    BayesianLinear(input_dim, hidden_dim),
+                    nn.ReLU(),
+                    BayesianLinear(hidden_dim, hidden_dim),
+                    nn.ReLU()
+                )
+            )
+
+        combined_dim = hidden_dim * self.num_filters
+
+        combined_layers = []
+        in_dim = combined_dim
+
+        # --- Add n_combined_layers hidden blocks ---
+        for _ in range(n_combined_layers):
+            combined_layers.append(BayesianLinear(in_dim, hidden_dim))
+            combined_layers.append(nn.ReLU())
+            in_dim = hidden_dim  # next layer input size = current output size
+
+        # --- Final output layer ---
+        combined_layers.append(BayesianLinear(hidden_dim, param_dim))
+        combined_layers.append(GeneralizedSigmoid(beta=.5, scale=10))
+
+        # --- Wrap into Sequential ---
+        self.output_net = nn.Sequential(*combined_layers)
+
+        # self.output_net = nn.Sequential(
+        #     BayesianLinear(combined_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     BayesianLinear(hidden_dim, param_dim),
+        #     # PositiveLeakyReLU(alpha=1, epsilon=5),
+        #     # nn.ReLU()
+        #     GeneralizedSigmoid(beta=.5, scale=10)
+        #     # nn.Linear(param_dim, param_dim),
+        #     # nn.ReLU()
+        # )
+
+    def forward(self):
+        x = self.x_data
+        latents = []
+        for i_f, net in enumerate(self.filter_nets):
+            x_f = x[self.filters_mask[i_f]]
+            x_f_flat = x_f.flatten().unsqueeze(0)
+            h_f = net(x_f_flat)
+            latents.append(h_f)
+
+        h_all = torch.cat(latents, dim=-1)
+        out = self.output_net(h_all)
+        return out.squeeze(0)
+
+class GeneralizedSigmoid(nn.Module):
+    """
+    y = 1 / (1 + exp(-beta * x))
+    
+    where beta controls the steepness of the curve.
+    Larger beta → steeper transition around 0.
+    """
+    def __init__(self, beta=1.0, scale=1):
+        super().__init__()
+        self.beta = nn.Parameter(torch.tensor(beta, dtype=torch.float32), requires_grad=False)
+        self.scale = nn.Parameter(torch.tensor(scale, dtype=torch.float32), requires_grad=False)
+
+    def forward(self, x):
+        return self.scale / (1 + torch.exp(-self.beta * x))
+
+class ScaledSigmoid(nn.Module):
+    """
+    Activation similar to LeakyReLU but ensures strictly positive outputs.
+    f(x) = max(αx, x) + ε
+    """
+    def __init__(self, scale=10):
+        super().__init__()
+        self.scale = scale
+
+
+    def forward(self, x):
+        # LeakyReLU behavior + epsilon shift to ensure positivity
+        return F.sigmoid(x)*self.scale#leaky_relu(x, negative_slope=self.negative_slope) + self.epsilon
+
+class PositiveLeakyReLU(nn.Module):
+    """
+    Activation similar to LeakyReLU but ensures strictly positive outputs.
+    f(x) = max(αx, x) + ε
+    """
+    def __init__(self, alpha=0.01, epsilon=1e-3):
+        super().__init__()
+        self.negative_slope = alpha
+        self.epsilon = epsilon
+
+    def forward(self, x):
+        # LeakyReLU behavior + epsilon shift to ensure positivity
+        return F.leaky_relu(x, negative_slope=self.negative_slope) + self.epsilon
+
 
 
 class MultiFilterMDN(nn.Module):
@@ -660,101 +851,3 @@ class MultiFilterMDN(nn.Module):
 
         return mean_params
 
-
-class BayesianLinear(nn.Module):
-    def __init__(self, in_features, out_features, prior_var=1.0):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.prior_var = prior_var
-
-        # variational parameters
-        self.weight_mu = nn.Parameter(torch.Tensor(out_features, in_features).normal_(0, 0.1))
-        self.weight_rho = nn.Parameter(torch.Tensor(out_features, in_features).fill_(-3))
-        self.bias_mu = nn.Parameter(torch.Tensor(out_features).normal_(0, 0.1))
-        self.bias_rho = nn.Parameter(torch.Tensor(out_features).fill_(-3))
-
-        self.log_prior = 0
-        self.log_variational_posterior = 0
-
-    def forward(self, x):
-        # reparameterization trick
-        weight_sigma = torch.log1p(torch.exp(self.weight_rho))
-        bias_sigma = torch.log1p(torch.exp(self.bias_rho))
-        eps_w = torch.randn_like(weight_sigma)
-        eps_b = torch.randn_like(bias_sigma)
-
-        weight = self.weight_mu + weight_sigma * eps_w
-        bias = self.bias_mu + bias_sigma * eps_b
-
-        # log probs for ELBO
-        prior = torch.distributions.Normal(0, self.prior_var**0.5)
-        var_post_w = torch.distributions.Normal(self.weight_mu, weight_sigma)
-        var_post_b = torch.distributions.Normal(self.bias_mu, bias_sigma)
-
-        self.log_prior = prior.log_prob(weight).sum() + prior.log_prob(bias).sum()
-        self.log_variational_posterior = var_post_w.log_prob(weight).sum() + var_post_b.log_prob(bias).sum()
-
-        return F.linear(x, weight, bias)
-
-
-class MultiFilterBNN(nn.Module):
-    def __init__(self, x_data, filters_mask, param_dim=5, hidden_dim=64):
-        super().__init__()
-        self.param_dim = param_dim
-        self.num_filters = filters_mask.shape[0]
-        self.filters_mask = filters_mask
-        self.x_data = x_data
-
-        self.filter_nets = nn.ModuleList()
-        for i_f in range(self.num_filters):
-            n_points = int(torch.sum(self.filters_mask[i_f]).item())
-            input_dim = n_points * self.x_data.shape[1]
-            self.filter_nets.append(
-                nn.Sequential(
-                    BayesianLinear(input_dim, hidden_dim),
-                    nn.ReLU(),
-                    BayesianLinear(hidden_dim, hidden_dim),
-                    nn.ReLU()
-                )
-            )
-
-        combined_dim = hidden_dim * self.num_filters
-        self.output_net = nn.Sequential(
-            BayesianLinear(combined_dim, hidden_dim),
-            nn.ReLU(),
-            BayesianLinear(hidden_dim, param_dim),
-            PositiveLeakyReLU(alpha=1e-1, epsilon=2),
-            nn.ReLU()
-            
-            # nn.Linear(param_dim, param_dim),
-            # nn.ReLU()
-        )
-
-    def forward(self):
-        x = self.x_data
-        latents = []
-        for i_f, net in enumerate(self.filter_nets):
-            x_f = x[self.filters_mask[i_f]]
-            x_f_flat = x_f.flatten().unsqueeze(0)
-            h_f = net(x_f_flat)
-            latents.append(h_f)
-
-        h_all = torch.cat(latents, dim=-1)
-        out = self.output_net(h_all)
-        return out.squeeze(0)
-
-
-class PositiveLeakyReLU(nn.Module):
-    """
-    Activation similar to LeakyReLU but ensures strictly positive outputs.
-    f(x) = max(αx, x) + ε
-    """
-    def __init__(self, alpha=0.01, epsilon=1e-3):
-        super().__init__()
-        self.negative_slope = alpha
-        self.epsilon = epsilon
-
-    def forward(self, x):
-        # LeakyReLU behavior + epsilon shift to ensure positivity
-        return F.leaky_relu(x, negative_slope=self.negative_slope) + self.epsilon
