@@ -477,14 +477,17 @@ class ModifiedSC4Loss(nn.Module):
             loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
         if self.mode=="mean_model":
             y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
-            y_fit = y_many.mean(0)#
+            # y_fit = y_many.mean(0)#
             y_std = y_many.std(0)#, unbiased=False)
-            logvar_penalty = 5*torch.mean(torch.relu(torch.mean(targets[:,2])-y_std))
+            sigma = torch.sqrt(y_std**2 + targets[:,2]**2)
+            # logvar_penalty = 5*torch.mean(torch.relu(torch.mean(targets[:,2])-y_std))
             # y_std = torch.clamp(y_std, torch.mean(targets[:,2]))
-            logvar = torch.log(y_std**2+1e-8)
-            loss = 0.5 * (logvar + (y_true - y_true)**2 / y_std**2)
-            print("logvar = ",torch.mean(logvar), "std = ", torch.mean(y_std))
-            loss = loss.mean() + logvar_penalty
+            logvar = 2*torch.log(sigma+1e-8)
+            loss = 0
+            for y in y_many:
+                loss += 0.5 * (logvar + (y_true - y)**2 / sigma**2)
+            # print("logvar = ",torch.mean(logvar), "std = ", torch.mean(y_std))
+            loss = loss.mean() #+ logvar_penalty
         if self.mode=="both":
             y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
             y_fit = y_many.mean(0)#

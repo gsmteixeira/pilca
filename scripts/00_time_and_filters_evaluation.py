@@ -214,7 +214,7 @@ def main():
     hyper_log.save_config(hyper_config, name="hyper_config.json")
 
     # --- run experiments ---
-    for filt_subset in filter_combinations[1:]:
+    for filt_subset in filter_combinations:
         for tspan in time_spans:
             print(f"\n Running experiment: filters={filt_subset}, time_span={tspan} days")
             try:
