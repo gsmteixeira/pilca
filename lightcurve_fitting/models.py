@@ -709,14 +709,14 @@ class ModifiedShockCooling4(Model):
     input_names = [
         'v_\\mathrm{s*}',
         'M_\\mathrm{env}',
-        # 'f_\\rho M',
+        'f_\\rho M',
         'R',
         't_0',
     ]
     units = [
         10. ** 8.5 * u.cm / u.s,
         u.Msun,
-        # u.Msun,
+        u.Msun,
         1e13 * u.cm,
         u.d,
     ]
@@ -750,7 +750,7 @@ class ModifiedShockCooling4(Model):
         R_bb = c3 * np.squeeze(L) ** 0.5 * power(T_K, -2.)
         return T_K, R_bb#power(ttilde, -0.17)#np.squeeze(L)#R_bb
 
-    def evaluate(self, t_in, f, v_s, M_env, f_rho_M, R, t_exp=0., kappa=1.):
+    def evaluate(self, t_in, f, v_s, M_env,f_rho_M, R, t_exp=0., kappa=1.):
         """
         Evaluate this model at a range of times and filters
 
@@ -779,7 +779,7 @@ class ModifiedShockCooling4(Model):
         y_fit : array-like
             The filtered model light curves
         """
-        T_K, R_bb = self.temperature_radius(t_in, v_s=v_s, M_env=M_env, f_rho_M=M_env, R=R, t_exp=t_exp, kappa=kappa)
+        T_K, R_bb = self.temperature_radius(t_in, v_s=v_s, M_env=M_env, f_rho_M=f_rho_M, R=R, t_exp=t_exp, kappa=kappa)
         # return(R_bb)
         lum_blackbody = blackbody_to_filters(f, T_K, R_bb, self.z)
         lum_suppressed = blackbody_to_filters(f, 0.74 * T_K, 0.74 ** -2. * R_bb, self.z)

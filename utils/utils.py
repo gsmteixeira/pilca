@@ -17,8 +17,6 @@ storage_parent_path = "/tf/astrodados2/pilca.storage/"
         
 
 
-
-
 class LCBuilder():
     def __init__(self, model_name="sc4",
                   model_parameters=[1.26491106, 2., 4.03506331, 2.5],
@@ -31,6 +29,8 @@ class LCBuilder():
         self.model_inputs = np.array(self.model_parameters)*np.array(self.model_units)
         self.seed = seed
         self._set_seed()
+
+
 
     def _set_seed(self):
 
