@@ -87,8 +87,11 @@ def lightcurve_mcmc(lc, model, priors=None, p_min=None, p_max=None, p_lo=None, p
     if model.output_quantity == 'flux':
         lc.calcFlux()
     elif model.output_quantity == 'lum':
-        lc.calcAbsMag()
-        lc.calcLum()
+        try:
+            lc["lum"]
+        except:
+            lc.calcAbsMag()
+            lc.calcLum()
 
     if use_sigma and model.input_names[-1] != '\\sigma':
         model.input_names.append('\\sigma')

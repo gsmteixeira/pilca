@@ -121,9 +121,12 @@ def run_experiment(lc, filters, time_span,
                                                  step_size=hc["scheduler"]["step_size"],
                                                  gamma=hc["scheduler"]["gamma"])
 
-    trainer = tp.Trainer(model=nn_model, criterion=criterion, epochs=hc["training"]["epochs"],
-                         n_samples_loss=hc["training"]["n_samples_loss"], optimizer=optimizer,
-                         scheduler=scheduler, verbose_step=200,
+    trainer = tp.Trainer(model=nn_model,
+                         criterion=criterion, epochs=hc["training"]["epochs"],                         
+                         n_samples_loss=hc["training"]["n_samples_loss"], 
+                         optimizer=optimizer,
+                         scheduler=scheduler, 
+                         verbose_step=100,
                          save_dir=os.path.join(logger.exp_dir, "model_weights.pth"),
                          es_kwargs=hc["early_stop"],
                          change_loss=hc["training"]["change_loss"])
@@ -159,7 +162,7 @@ def main():
 
     filter_combinations = [all_filters[:i+1] for i in range(len(all_filters))]
 
-    max_days = 5
+    max_days = 10
     time_spans = np.arange(1, max_days + 1)  # [1, 2, ..., 10]
 
     model_parameters = [1.2, 2., 4.0, 2.5]
@@ -220,15 +223,15 @@ def main():
                     },
                     "early_stop": {
                         "use_es":True,
-                        "patience":100,
+                        "patience":200,
                         "save_best_loss":True}
                 }
     
     hyper_log.save_config(hyper_config, name="hyper_config.json")
 
     # --- run experiments ---
-    for filt_subset in [filter_combinations[-3]]:
-        for tspan in time_spans[-1:]:
+    for filt_subset in filter_combinations:
+        for tspan in time_spans:
             print(f"\n Running experiment: filters={filt_subset}, time_span={tspan} days")
             try:
 
