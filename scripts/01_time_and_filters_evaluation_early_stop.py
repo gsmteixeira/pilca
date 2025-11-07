@@ -152,7 +152,7 @@ def run_experiment(lc, filters, time_span,
 def main():
 
     IS_A_TEST = True
-    TEST_NAME = "TEST_DEBUG_0"
+    TEST_NAME = "TEST_DEBUG_1_free_frhom"
 
     # --- define cumulative filter sets (z → UV) ---
 
@@ -165,13 +165,13 @@ def main():
     max_days = 10
     time_spans = np.arange(1, max_days + 1)  # [1, 2, ..., 10]
 
-    model_parameters = [1.2, 2., 4.0, 2.5]
+    model_parameters = [1.2, 2., 2., 4.0, 2.5]
 
     # --- setup light curve builder ---
     builder = ut.LCBuilder(
         model_name="sc4",
         model_parameters=model_parameters,
-        model_units=[1,1,1,1],
+        model_units=[1,1,1,1,1],
         seed=42
     )
 
@@ -205,7 +205,7 @@ def main():
                     },
                     "training": {
                         "epochs": 2000,
-                        "n_samples_loss": 30,
+                        "n_samples_loss": 50,
                         "loss_mode": "mean_param",
                         "change_loss":True
                     }, 
@@ -216,7 +216,7 @@ def main():
                         "hidden_dim": 16,
                         "n_filter_layers":1,
                         "n_combined_layers":2,
-                        "param_dim": 4
+                        "param_dim": 5
                     },
                     "data": {
                         "t0_offset": 3

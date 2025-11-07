@@ -56,9 +56,14 @@ class LCBuilder():
             model = models.ShockCooling4(lc_fake)   
             v_s = model_inputs[0]       # Shock velocity
             M_env = model_inputs[1]     # Envelope mass
-            f_rho_M = model_inputs[1]   # Density profile factor
-            R = model_inputs[2]         # Radius
-            t_exp = model_inputs[3]     # explosion time
+            if len(self.model_inputs)==5 :
+                f_rho_M = model_inputs[2]   # Density profile factor
+                R = model_inputs[3]         # Radius
+                t_exp = model_inputs[4]     # explosion time
+            elif len(self.model_inputs)==4 :
+                f_rho_M = model_inputs[1]   # Density profile factor
+                R = model_inputs[2]         # Radius
+                t_exp = model_inputs[3]     # explosion time
             lum = model(mjd_array, v_s=v_s, M_env=M_env, f_rho_M=f_rho_M, R=R, t_exp=t_exp, f=filter_for_mjd)
             dlum = np.random.normal(0, dlum_factor*np.mean(lum), len(mjd_array))
         else:

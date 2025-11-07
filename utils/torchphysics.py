@@ -456,7 +456,7 @@ class Trainer():
         return self.history
 
 class ModifiedSC4Loss(nn.Module):
-    def __init__(self, ufilters, z, mode="mean_param", min_t0=2.99):
+    def __init__(self, ufilters, z, mode="mean_param", min_t0=2.99, fixed_frhom=None):
         """
         Custom Weighted Mean Squared Error Loss
         :param weight: A tensor of weights for each sample (optional).
@@ -466,6 +466,8 @@ class ModifiedSC4Loss(nn.Module):
         self.ufilters = ufilters
         self.mode = mode
         self.min_t0 = min_t0
+        self.fixed_frhom = fixed_frhom
+        # self.free_frhom = free_frhom
         # self.weight = weight
 
     def forward(self, outputs, targets, filters_mask):
@@ -515,11 +517,21 @@ class ModifiedSC4Loss(nn.Module):
         # outputs = denormalize(outputs, low=0, high=10)
         # print(outputs)
         outputs = torch.clip(outputs,min=1e-3)
-        v_s = outputs[0]       # Shock velocity
-        M_env = outputs[1]     # Envelope mass
-        f_rho_M = outputs[1]   # Density profile factor
-        R = outputs[2]         # Radius
-        t_exp = outputs[3] 
+        if len(outputs)==5:
+            v_s = outputs[0]       # Shock velocity
+            M_env = outputs[1]     # Envelope mass
+            f_rho_M = outputs[2]   # Density profile factor
+            R = outputs[3]         # Radius
+            t_exp = outputs[4] 
+        elif len(outputs)==4:
+            v_s = outputs[0]       # Shock velocity
+            M_env = outputs[1]     # Envelope mass
+            if self.fixed_frhom:
+                f_rho_M = self.fixed_frhom
+            else:
+                f_rho_M = outputs[1]# Density profile factor
+            R = outputs[2]         # Radius
+            t_exp = outputs[3] 
         # penalty = 1e-2*(torch.relu(t_exp - 3) ** 2) + 1e-4*(torch.relu(R - 6) ** 2) + 1e-4*(torch.relu(1/(M_env+0.1)))
         
         t_exp = torch.clip(t_exp, max=self.min_t0)
@@ -563,14 +575,19 @@ class ModifiedSC4Loss(nn.Module):
     #     penalty = 1e-5*(torch.relu(t_exp - 3) ** 2) #+ 1e-3*(torch.relu(R - 10) ** 2) + 1e-6*(torch.relu(1/(M_env+0.1)))
     #     return penalty
     def get_penalty(self, outputs):
-        v_s, M_env, R, t_exp = outputs
+
+        if len(outputs)==5:
+            v_s, M_env, f_rho_M, R, t_exp = outputs
+        elif len(outputs)==4:
+            v_s, M_env, R, t_exp = outputs
 
         # Penalize out-of-bounds values
         penalty = 0.0 + 1e-2*(torch.relu(R - 10) ** 2)
         penalty += 1e-2 * (torch.relu(t_exp - self.min_t0) ** 2)      # upper bound for t_exp
         penalty += 1e-2 * (torch.relu(-v_s) ** 2)           # penalize v_s < 0
         penalty += 1e-2 * (torch.relu(-M_env) ** 2)         # penalize M_env < 0
-        # penalty += 1e-4 * (torch.relu(-f_rho_M) ** 2)       # penalize f_rho_M < 0
+        if len(outputs)==5:
+            penalty += 1e-4 * (torch.relu(-f_rho_M) ** 2)       # penalize f_rho_M < 0
         penalty += 1e-2 * (torch.relu(-R) ** 2)             # penalize R < 0
         penalty += 1e-2 * (torch.relu(-t_exp) ** 2)         # penalize t_exp < 0
 
@@ -600,8 +617,12 @@ def get_physical(x, b, low, high):
     return x
 
 def print_outputs(outputs, loss, step):
-    v_s, M_env,  R, t_exp = outputs  # unpack dos parâmetros
-    f_rho_M = M_env
+    if len(outputs)==4:
+        v_s, M_env,  R, t_exp = outputs  # unpack dos parâmetros
+        f_rho_M = M_env
+    elif len(outputs)==5:
+        v_s, M_env, f_rho_M, R, t_exp = outputs  # unpack dos parâmetros
+
     # exemplo de cálculo da loss (substitua pelo seu)
     # loss = physics_loss(outputs, target)
 
