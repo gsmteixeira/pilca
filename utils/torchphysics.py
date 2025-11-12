@@ -12,6 +12,8 @@ import torch
 from extinction import fitzpatrick99
 import torch.nn as nn
 import torch.nn.functional as F
+import os, glob
+
 
 torch.set_default_dtype(torch.float64)
 
@@ -431,7 +433,9 @@ class Trainer():
                 if loss<es_last_loss:
                     counter = 0
                     es_last_loss = loss
-                    torch.save(self.model.state_dict(), self.save_dir.replace(".pth", f"_best_loss_epoch_{epoch}.pth"))
+                    for f in glob.glob(self.save_dir.replace(".pth", "_best_loss_epoch_*")):
+                        os.remove(f)
+                    torch.save(self.model.state_dict(), self.save_dir.replace(".pth", f"_best_model.pth"))
                 else:
                     counter+=1
 
@@ -439,12 +443,16 @@ class Trainer():
                     if self.change_loss:
                         if self.criterion.mode=="mean_param":
                             self.criterion.mode = "mean_model"
+                            self.model.load_state_dict(torch.load(self.save_dir.replace(".pth", f"_best_model.pth")))
+                            # model.state_dict() = 
                             counter=0
                         else:
+                            self.model.load_state_dict(torch.load(self.save_dir.replace(".pth", f"_best_model.pth")))
                             break
                     else:
+                        self.model.load_state_dict(torch.load(self.save_dir.replace(".pth", f"_best_model.pth")))
                         break
-
+            
             if self.verbose_step:
                 if epoch % self.verbose_step == 0:
                     print_outputs(outputs_mean, loss, epoch)
@@ -477,29 +485,35 @@ class ModifiedSC4Loss(nn.Module):
         if self.mode=="mean_param":
             y_fit = self.get_yfit(outputs_mean, targets, filters_mask)
             loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
+
         if self.mode=="mean_model":
             y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
-            # y_fit = y_many.mean(0)#
             y_std = y_many.std(0)#, unbiased=False)
             sigma = torch.sqrt(y_std**2 + targets[:,2]**2)
-            # logvar_penalty = 5*torch.mean(torch.relu(torch.mean(targets[:,2])-y_std))
-            # y_std = torch.clamp(y_std, torch.mean(targets[:,2]))
             logvar = 2*torch.log(sigma+1e-8)
             loss = 0
             for y in y_many:
                 loss += 0.5 * (logvar + (y_true - y)**2 / sigma**2)
-            # print("logvar = ",torch.mean(logvar), "std = ", torch.mean(y_std))
-            loss = loss.mean() #+ logvar_penalty
+ 
+            loss = loss.mean()  
+
+        if self.mode=="mean_model_mse":
+            y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+            loss = 0
+            for y in y_many:
+                loss += torch.sum((y_true - y)**2 /len(y_true))
+ 
+            # loss = loss.mean() #+ logvar_penalty
+
         if self.mode=="both":
             y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
             y_fit = y_many.mean(0)#
             y_std = y_many.std(0)#, unbiased=False)
             y_std = torch.clamp(y_std, torch.mean(targets[:,2]))
-            loss_var = 0.5 * (torch.log(y_std**2+1e-8) + (y_true - y_true)**2 / y_std**2)
+            loss_var = 0.5 * (torch.log(y_std**2+1e-8) + (y_true - y_fit)**2 / y_std**2)
             loss_mse = (y_true - y_fit)**2
             loss = loss_var.mean() + loss_mse.mean()
-        
-        # loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
+
         penalty = self.get_penalty(outputs_mean)
         return loss+penalty
         
@@ -675,14 +689,16 @@ class BayesianLinear(nn.Module):
 
 
 class MultiFilterBNN(nn.Module):
-    def __init__(self, x_data, filters_mask, param_dim=5, hidden_dim=64, n_filter_layers=1, n_combined_layers=1,):
+    def __init__(self, x_data, filters_mask, param_dim=5, hidden_dim=64, n_filter_layers=1, n_combined_layers=1, dropout_rate=0):
         super().__init__()
         self.param_dim = param_dim
         self.num_filters = filters_mask.shape[0]
         self.filters_mask = filters_mask
         self.x_data = x_data
+        self.dropout_rate = dropout_rate
 
         self.filter_nets = nn.ModuleList()
+
         for i_f in range(self.num_filters):
             n_points = int(torch.sum(self.filters_mask[i_f]).item())
             input_dim = n_points * self.x_data.shape[1]
@@ -694,6 +710,17 @@ class MultiFilterBNN(nn.Module):
                     nn.ReLU()
                 )
             )
+        # for i_f in range(self.num_filters):
+        #     n_points = int(torch.sum(self.filters_mask[i_f]).item())
+        #     input_dim = n_points * self.x_data.shape[1]
+        #     f_layers = []
+        #     for _ in range(n_filter_layers):
+        #         f_layers.append(BayesianLinear(input_dim, hidden_dim))
+        #         f_layers.append(nn.ReLU())
+        #         f_layers.append(nn.Dropout(self.dropout_rate))
+        #         input_dim = hidden_dim 
+
+        #     self.filter_nets.append(nn.Sequential(*f_layers))
 
         combined_dim = hidden_dim * self.num_filters
 
@@ -704,6 +731,7 @@ class MultiFilterBNN(nn.Module):
         for _ in range(n_combined_layers):
             combined_layers.append(BayesianLinear(in_dim, hidden_dim))
             combined_layers.append(nn.ReLU())
+            combined_layers.append(nn.Dropout(self.dropout_rate))
             in_dim = hidden_dim  # next layer input size = current output size
 
         # --- Final output layer ---
@@ -746,7 +774,7 @@ class GeneralizedSigmoid(nn.Module):
     """
     def __init__(self, beta=1.0, scale=1):
         super().__init__()
-        self.beta = nn.Parameter(torch.tensor(beta, dtype=torch.float32), requires_grad=False)
+        self.beta = nn.Parameter(torch.tensor(beta, dtype=torch.float32), requires_grad=True)
         self.scale = nn.Parameter(torch.tensor(scale, dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):

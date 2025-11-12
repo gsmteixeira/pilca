@@ -194,7 +194,7 @@ def light_curve_plot(lc, offset=0.5, ycol="lum"):
 
         # Plot with error bars
         ax.errorbar(mjd_filt, y_filt, yerr=y_filt_err,
-         fmt=marker, label=f"{filt} (offset: {offsets[filt]:.1g})",
+         fmt=marker, label=f"{filt} + {offsets[filt]:.1g}",
          capsize=3, **style)
 
     # Aesthetics
@@ -202,11 +202,11 @@ def light_curve_plot(lc, offset=0.5, ycol="lum"):
     ax.set_ylabel(f"{ycol} + Offset")
     # ax.invert_yaxis()  # Invert y-axis for magnitudes
     ax.grid(True, linestyle='--', alpha=0.5)
-    ax.set_title("Light Curve Plot with Offsets")
+    # ax.set_title("Light Curve Plot with Offsets")
     if ycol=="lum":
         ax.set_yscale("log")
     # Move the legend to the right of the plot
-    ax.legend(title="Filter (Offset)", loc='center left', bbox_to_anchor=(1, 0.5))
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     
 
 

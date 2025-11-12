@@ -51,11 +51,11 @@ def lc_modeling_plot(lc, samples, model, offset=0.5, ycol="lum", kappa=1.):
         style = filt.plotstyle if hasattr(filt, 'plotstyle') else {}
 
         ax.errorbar(mjd, y, yerr=yerr, fmt=marker,
-                    label=f"{filt} (offset: {offsets[filt]:.1g})",
+                    label=f"{filt} + {offsets[filt]:.1g}",
                     capsize=3, **style)
 
     # Time grid for model evaluation
-    t_grid = np.linspace(lc['MJD'].min() - 5, lc['MJD'].max() + 5, 300)
+    t_grid = np.linspace(lc['MJD'].min() - .1, lc['MJD'].max() + 1, 300)
 
     # Plot sampled models
     for p in samples[np.random.choice(len(samples), size=min(100, len(samples)), replace=False)]:
@@ -73,7 +73,7 @@ def lc_modeling_plot(lc, samples, model, offset=0.5, ycol="lum", kappa=1.):
         mod_vals = model.evaluate(t_grid, [filt], v_s, M_env, f_rho_M, R, t_exp, kappa)
         filtstyle = filt.plotstyle.copy()
 
-        ax.plot(t_grid, np.log10(mod_vals.squeeze()) + offsets[filt], lw=2, label=f"Median model - {filt}", c=filtstyle["color"])
+        ax.plot(t_grid, np.log10(mod_vals.squeeze()) + offsets[filt], lw=2, label=f"_Median model - {filt}", c=filtstyle["color"])
 
     # Final touches
     ax.set_xlabel("MJD")
@@ -81,7 +81,7 @@ def lc_modeling_plot(lc, samples, model, offset=0.5, ycol="lum", kappa=1.):
     if ycol == "lum":
         ax.set_yscale("log")
     ax.grid(True, linestyle='--', alpha=0.5)
-    ax.set_title("Light Curve with Model Fits (per filter)")
+    # ax.set_title("Light Curve with Model Fits (per filter)")
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     plt.tight_layout()
     plt.show()
