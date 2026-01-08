@@ -2,7 +2,7 @@
 # General
 ####################################
 test*
-random/
+random*
 .DS_Store
 Thumbs.db
 *.log
