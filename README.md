@@ -48,7 +48,6 @@ scripts/
 
 utils/
     Analysis, plotting, and differentiable-physics helpers. 
-    
     torchphysics.py contains the core modules of this projec -- the Bayesian networks and the addapted shock cooling models.
 
 ---------------------------------------------------------------------
