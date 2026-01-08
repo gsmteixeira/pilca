@@ -5,8 +5,8 @@ transients from sparse and irregular multi-band light curves. It combines differ
 models with neural-network inference to provide fast, physically motivated parameter estimates and
 reliable initial conditions for Bayesian methods such as MCMC.
 
-The framework is developed with relevance to large time-domain surveys (e.g. LSST), where early,
-automated physical interpretation of transient alerts is essential.
+
+**WORK IN PROGRESS — This project is in its very initial stages and under active development.**
 
 ---------------------------------------------------------------------
 
@@ -23,44 +23,43 @@ This is a methodological and scientific framework, not a full alert-broker syste
 ---------------------------------------------------------------------
 
 REPOSITORY STRUCTURE
-
+```text
 .
-├── data/                   Example or intermediate data
-├── lightcurve_fitting/     Core PILCA package
-├── notebooks/              Tutorials and exploratory notebooks
-├── scripts/                Experiment and MCMC execution scripts
+├── data/                   Observed Light Curves
+├── lightcurve_fitting/     Clone of the [lightcurve_fitting](https://github.com/griffin-h/lightcurve_fitting) package from Griffin Hosseinzadeh
+├── notebooks/              Main experiments and exploratory notebooks
+├── scripts/                Routines and MCMC execution scripts
 ├── utils/                  Shared utilities and helpers
 └── requirements.txt        Python dependencies
+```
 
 ---------------------------------------------------------------------
 
 MAIN COMPONENTS
 
 lightcurve_fitting/
-    Neural networks, differentiable physical models, and training logic
+        Original base code for the shock cooling models fitting (MCMC implementation) from Hosseinzadeh
 
 notebooks/
-    End-to-end examples (training, evaluation, MCMC preparation)
+    Pipeline building, test experiments, results and main workflow
 
 scripts/
-    Reproducible experiment runners
+    Long experiments runner and MCMC execution
 
 utils/
-    Analysis, plotting, and differentiable-physics helpers
+    Analysis, plotting, and differentiable-physics helpers. 
+    
+    torchphysics.py contains the core modules of this projec -- the Bayesian networks and the addapted shock cooling models.
 
 ---------------------------------------------------------------------
 
 DATA
-
-Raw survey data are not included. The code assumes user-provided or simulated multi-band light
-curves. Data paths must be configured locally in notebooks or scripts.
+The obseved photometry of a given SN. 
 
 ---------------------------------------------------------------------
 
 REPRODUCIBILITY AND DOCUMENTATION
 
-This repository supports reproducibility of the PILCA methodology and its validation on simulated
-or observational data. Code documentation (docstrings and comments) was generated with the
-assistance of large language models and manually reviewed.
+This repository supports reproducibility of the PILCA methodology and its validation on simulated or observational data. Code documentation was generated with the assistance of LLMs.
 
 For questions or contributions, please open an issue.
