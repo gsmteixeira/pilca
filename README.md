@@ -37,6 +37,9 @@ REPOSITORY STRUCTURE
 
 MAIN COMPONENTS
 
+data/
+    The obseved photometry of a given SN. 
+
 lightcurve_fitting/
         Original base code for the shock cooling models fitting (MCMC implementation) from Hosseinzadeh
 
@@ -47,13 +50,8 @@ scripts/
     Long experiments runner and MCMC execution
 
 utils/
-    Analysis, plotting, and differentiable-physics helpers. 
-    torchphysics.py contains the core modules of this projec -- the Bayesian networks and the addapted shock cooling models.
-
----------------------------------------------------------------------
-
-DATA
-The obseved photometry of a given SN. 
+    Analysis, plotting, and differentiable-physics helpers. The file
+    torchphysics.py contains the core modules of this project -- the Bayesian networks and the addapted shock cooling models.
 
 ---------------------------------------------------------------------
 
