@@ -1,4 +1,4 @@
-PILCA — Physics-Informed Machine Learning Light Curve Analyzer
+## PILCA — Physics-Informed Machine Learning Light Curve Analyzer
 
 PILCA is a physics-informed machine-learning framework for the characterization of astrophysical
 transients from sparse and irregular multi-band light curves. It combines differentiable physical
