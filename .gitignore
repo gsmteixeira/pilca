@@ -1,0 +1,128 @@
+####################################
+# General
+####################################
+test*
+random/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.cache/
+__pycache__/
+
+####################################
+# Python
+####################################
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.pyre/
+.ruff_cache/
+
+####################################
+# Virtual environments
+####################################
+venv/
+.venv/
+env/
+ENV/
+conda-env/
+*.conda
+
+####################################
+# Jupyter
+####################################
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+####################################
+# Machine Learning / Data
+####################################
+# data/
+datasets/
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.npz
+*.npy
+wandb/
+mlruns/
+tensorboard/
+logs/
+
+####################################
+# LaTeX
+####################################
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.xdv
+
+####################################
+# Figures / outputs
+####################################
+figures/*.pdf
+figures/*.png
+figures/*.jpg
+figures/*.eps
+
+####################################
+# Editors / IDEs
+####################################
+.vscode/
+.idea/
+.spyderproject
+.spyproject
+*.sublime-workspace
+*.sublime-project
+
+####################################
+# OS / system
+####################################
+.Trashes
+.Spotlight-V100
+.AppleDouble
+.LSOverride
+
+####################################
+# Git
+####################################
+.gitignore~
+.gitmodules~
+
+####################################
+# Archives
+####################################
+*.zip
+*.tar
+*.tar.gz
+*.rar
