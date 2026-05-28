@@ -36,3 +36,47 @@ def set_plot_style():
 
         })
     
+
+
+
+def set_thesis_style(fontsize=20):
+
+    plt.rcParams.update({
+
+        # Font
+        "font.family": "STIXGeneral",
+        "mathtext.fontset": "stix",
+        "font.size": fontsize,
+
+        # Axes
+        "axes.labelsize": fontsize * 1.2,
+        "axes.titlesize": fontsize * 1.2,
+        "axes.linewidth": 1.2,
+
+        # Ticks
+        "xtick.labelsize": fontsize * 0.9,
+        "ytick.labelsize": fontsize * 0.9,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.major.size": 5,
+        "ytick.major.size": 5,
+
+        # Legend
+        "legend.fontsize": fontsize * 0.9,
+        "legend.frameon": False,
+
+        # Lines
+        "lines.linewidth": 3,
+
+        # Figure
+        "figure.figsize": (6,4),
+        "figure.dpi": 120,
+
+        # Savefig
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+
+        # Grid
+        "axes.grid": False
+    })
+    
