@@ -13,6 +13,7 @@ Thumbs.db
 *~
 .cache/
 __pycache__/
+old*
 
 ####################################
 # Python

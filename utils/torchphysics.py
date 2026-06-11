@@ -463,6 +463,86 @@ class Trainer():
         
         return self.history
 
+
+class VariationalTrainer():
+    def __init__(self, model,
+                  criterion, epochs,
+                  n_samples_loss, 
+                  optimizer,scheduler,
+                  verbose_step=100,
+                  save_dir="",
+                  es_kwargs={"use_es":False,
+                             "patience":20,
+                             "save_best_loss":True},
+                  change_loss=False):
+
+        self.model = model
+        self.criterion = criterion
+        self.epochs = epochs
+        self.n_samples_loss = n_samples_loss
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.verbose_step = verbose_step
+        self.save_dir = save_dir
+        self.history = {}
+        self.es_use = es_kwargs["use_es"]
+        self.es_patience = es_kwargs["patience"]
+        self.es_save_best = es_kwargs["save_best_loss"]
+        self.change_loss = change_loss
+        
+    def train(self,):
+        # history = {}
+        loss_list = []
+        es_counter = 0
+        es_last_loss = torch.inf#.to(self.model.device)
+        for epoch in range(self.epochs):
+            self.optimizer.zero_grad()
+
+            outputs = torch.stack([self.model()[0] for i in range(self.n_samples_loss)])
+            # print(outputs.shape)
+            outputs_mean = outputs.mean(0)
+            loss = self.criterion(outputs, self.model.x_data, self.model.filters_mask)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                                            max_norm=1)
+            self.optimizer.step()
+            self.scheduler.step()
+
+            if self.es_use:
+                if loss<es_last_loss:
+                    counter = 0
+                    es_last_loss = loss
+                    for f in glob.glob(self.save_dir.replace(".pth", "_best_loss_epoch_*")):
+                        os.remove(f)
+                    torch.save(self.model.state_dict(), self.save_dir.replace(".pth", f"_best_model.pth"))
+                else:
+                    counter+=1
+
+                if counter==self.es_patience:
+                    if self.change_loss:
+                        if self.criterion.mode=="mean_param":
+                            self.criterion.mode = "mean_model"
+                            self.model.load_state_dict(torch.load(self.save_dir.replace(".pth", f"_best_model.pth")))
+                            # model.state_dict() = 
+                            counter=0
+                        else:
+                            self.model.load_state_dict(torch.load(self.save_dir.replace(".pth", f"_best_model.pth")))
+                            break
+                    else:
+                        self.model.load_state_dict(torch.load(self.save_dir.replace(".pth", f"_best_model.pth")))
+                        break
+            
+            if self.verbose_step:
+                if epoch % self.verbose_step == 0:
+                    print_outputs(outputs_mean, loss, epoch)
+            loss_list.append(loss)
+        if not self.es_use:
+            torch.save(self.model.state_dict(), self.save_dir)
+        self.history["loss"] = torch.tensor(loss_list).detach().cpu().numpy()
+        
+        return self.history
+
+
 class ModifiedSC4Loss(nn.Module):
     def __init__(self, ufilters, z, mode="mean_param", min_t0=2.99, fixed_frhom=None):
         """
@@ -607,6 +687,794 @@ class ModifiedSC4Loss(nn.Module):
 
         return penalty
 
+
+import torch
+import torch.nn as nn
+from torch.distributions import Normal
+
+
+class VariationalSC4Loss(nn.Module):
+
+    def __init__(self, 
+                 ufilters, 
+                 z, 
+                 mode="mean_param", 
+                 min_t0=2.99, 
+                 fixed_frhom=None,
+                 p_min=None,
+                 p_max=None):
+        """
+        Custom Weighted Mean Squared Error Loss
+        :param weight: A tensor of weights for each sample (optional).
+        """
+        super(VariationalSC4Loss, self).__init__()
+        self.sc4model = ShockCooling4(z=z, device=device)#sc4model
+        self.ufilters = ufilters
+        self.mode = mode
+        self.min_t0 = min_t0
+        self.fixed_frhom = fixed_frhom
+        self.p_min = p_min
+        self.p_max = p_max
+        # self.free_frhom = free_frhom
+        # self.weight = weight
+    
+    def get_gaussian_penalty(self, outputs):
+        mu = outputs.mean(0, keepdim=True)
+        std = outputs.std(0, keepdim=True) + 1e-8
+
+        z = (outputs - mu) / std
+
+        skew = (z**3).mean(0)
+        kurt = (z**4).mean(0) - 3
+
+        gaussian_penalty = (
+            skew.pow(2).mean()
+            + kurt.pow(2).mean()
+        )
+        return gaussian_penalty
+   
+    def get_edge_penalty(self, outputs):
+        margin = 0.05
+
+        width = self.p_max - self.p_min
+
+        d_left  = (outputs - self.p_min) / width
+        d_right = (self.p_max - outputs) / width
+
+        d = torch.minimum(d_left, d_right)
+
+        edge_penalty = F.relu(margin - d).pow(2).mean()  
+        return edge_penalty  
+    
+    def get_negative_penalty(self, outputs):
+        neg_penalty = F.relu(-outputs).pow(2).mean()  
+        return neg_penalty  
+
+    def out_transform(self, outputs):
+        outputs = (
+            self.p_min
+            + (self.p_max - self.p_min)
+            * torch.sigmoid(outputs)
+        )
+        return outputs
+
+    def forward(self, outputs, targets, filters_mask):
+
+
+        # sample, mus, logvar = outputs 
+        # print(outputs.squeeze().shape)
+        
+        # outputs = self.out_transform(outputs)
+        y_true = self.get_y_true(targets, filters_mask)
+        outputs_mean = outputs.mean(0).squeeze()
+
+
+        # ### GAUSSIAN PENALTY
+        # gaussian_penalty = self.get_gaussian_penalty(outputs)
+
+        # ## EDGE PENALTY
+        # edge_penalty = self.get_edge_penalty(outputs)
+
+        ##
+        negative_penalty = self.get_negative_penalty(outputs)
+        # print(negative_penalty)
+        # aa
+        if self.mode=="mean_param":
+            y_fit = self.get_yfit(outputs_mean, targets, filters_mask)
+            loss = torch.sum((y_true - y_fit)**2)/len(y_fit)
+
+        if self.mode=="mean_model":
+            y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+
+            y_mean = self.get_yfit(outputs_mean, targets, filters_mask)#y_many.mean(0)
+            y_std  = y_many.std(0)
+
+            
+
+
+            loss = torch.sum((y_true - y_mean)**2)/len(y_mean) + negative_penalty#+ gaussian_penalty #+ 5*edge_penalty
+            sigma = torch.sqrt(
+                y_std**2 +
+                targets[:,2]**2 +
+                1e-6)
+            print(f"sigma: {sigma.mean()}")
+            print(f"negative penality: {negative_penalty}")
+            # print(f"edge penality: {edge_penalty}")
+
+            # loss = 0.5 * (
+            #     2 * torch.log(sigma + 1e-8)
+            #     + (y_true - y_mean)**2 / sigma**2
+            # )
+
+            # loss = loss.mean()
+
+
+            # y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+            # y_std = y_many.std(0)#, unbiased=False)
+            # sigma = torch.sqrt(y_std**2 + targets[:,2]**2)
+            # logvar = 2*torch.log(sigma+1e-8)
+            # loss = 0
+            # for y in y_many:
+            #     loss += 0.5 * (logvar + (y_true - y)**2 / sigma**2)
+
+            # loss = loss.mean() / len(y_many)
+
+        if self.mode=="mean_model_mse":
+            y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+            loss = 0
+            for y in y_many:
+                loss += torch.sum((y_true - y)**2 /len(y_true))
+ 
+            # loss = loss.mean() #+ logvar_penalty
+
+        if self.mode=="both":
+            y_many = torch.stack([self.get_yfit(out, targets, filters_mask) for out in outputs])
+            y_fit = y_many.mean(0)#
+            y_std = y_many.std(0)#, unbiased=False)
+            y_std = torch.clamp(y_std, torch.mean(targets[:,2]))
+            loss_var = 0.5 * (torch.log(y_std**2+1e-8) + (y_true - y_fit)**2 / y_std**2)
+            loss_mse = (y_true - y_fit)**2
+            loss = loss_var.mean() + loss_mse.mean()
+
+        penalty = self.get_penalty(outputs_mean)
+        return loss+penalty        
+    
+    def get_yfit(self, outputs, targets, filters_mask):
+        """
+        Compute the weighted MSE loss.
+        :param predictions: Model outputs (torch tensor).
+        :param targets: Ground truth values (torch tensor).
+        :return: Weighted MSE loss value.
+        """
+        # if (outputs < 0).any():
+        #     return torch.tensor(float('inf'), device=outputs.device)
+        # outputs = sigmoid(outputs, b=1e-3)
+        # outputs = denormalize(outputs, low=0, high=10)
+        # print(outputs)
+        # outputs = self.out_transform(outputs)
+        # print(outputs.squeeze())
+        # print(len(outputs))
+        outputs = torch.clip(outputs,min=1e-3)
+        if len(outputs)==5:
+            v_s = outputs[0]       # Shock velocity
+            M_env = outputs[1]     # Envelope mass
+            f_rho_M = outputs[2]   # Density profile factor
+            R = outputs[3]         # Radius
+            t_exp = outputs[4] 
+        elif len(outputs)==4:
+            v_s = outputs[0]       # Shock velocity
+            M_env = outputs[1]     # Envelope mass
+            if self.fixed_frhom:
+                f_rho_M = self.fixed_frhom
+            else:
+                f_rho_M = outputs[1]# Density profile factor
+            R = outputs[2]         # Radius
+            t_exp = outputs[3] 
+        # penalty = 1e-2*(torch.relu(t_exp - 3) ** 2) + 1e-4*(torch.relu(R - 6) ** 2) + 1e-4*(torch.relu(1/(M_env+0.1)))
+        
+        t_exp = torch.clip(t_exp, max=self.min_t0)
+        # t_exp = torch.clip(t_exp, min=1e-3) 
+        
+        # sigma = outputs[5] 
+        loss = 0
+        # print(targets[:,0][filters_mask[0]])
+        y_fit_list = []
+        for i, f in enumerate(self.ufilters):
+            # print(f)
+            lum = self.sc4model(targets[:,0][filters_mask[i]], v_s=v_s, M_env=M_env, f_rho_M=f_rho_M, R=R, t_exp=t_exp, f=f)
+
+            y_fit_list.append(torch.log10(lum))
+
+            # y = targets[:,1][filters_mask[i]]
+
+            # loss += torch.sum((y-y_fit)**2)/len(y)
+            
+        y_fit = torch.concatenate(y_fit_list)
+        return y_fit#loss+penalty#.mean( )+
+    
+    def get_y_true(self, targets, filters_mask):
+        y = []
+        for i, f in enumerate(self.ufilters):
+            # print(f)
+            # lum = self.sc4model(targets[:,0][filters_mask[i]], v_s=v_s, M_env=M_env, f_rho_M=f_rho_M, R=R, t_exp=t_exp, f=f)
+            # print(targets[:,1][filters_mask[i]].shape)
+            # aaa
+            # y_fit.append(torch.log10(lum))
+            y.append(targets[:,1][filters_mask[i]])
+        y_true = torch.concatenate(y)
+        return y_true
+
+    # def get_penalty(self, outputs):
+    #     v_s = outputs[0]       # Shock velocity
+    #     M_env = outputs[1]     # Envelope mass
+    #     f_rho_M = outputs[1]   # Density profile factor
+    #     R = outputs[2]         # Radius
+    #     t_exp = outputs[3] 
+    #     penalty = 1e-5*(torch.relu(t_exp - 3) ** 2) #+ 1e-3*(torch.relu(R - 10) ** 2) + 1e-6*(torch.relu(1/(M_env+0.1)))
+    #     return penalty
+    def get_penalty(self, outputs):
+        # outputs = self.out_transform(outputs)
+
+        if len(outputs)==5:
+            v_s, M_env, f_rho_M, R, t_exp = outputs
+        elif len(outputs)==4:
+            v_s, M_env, R, t_exp = outputs
+
+        # Penalize out-of-bounds values
+        penalty = 0.0 + 1e-2*(torch.relu(R - 10) ** 2)
+        penalty += 1e-2 * (torch.relu(t_exp - self.min_t0) ** 2)      # upper bound for t_exp
+        penalty += 1e-2 * (torch.relu(-v_s) ** 2)           # penalize v_s < 0
+        penalty += 1e-2 * (torch.relu(-M_env) ** 2)         # penalize M_env < 0
+        if len(outputs)==5:
+            penalty += 1e-4 * (torch.relu(-f_rho_M) ** 2)       # penalize f_rho_M < 0
+        penalty += 1e-2 * (torch.relu(-R) ** 2)             # penalize R < 0
+        penalty += 1e-2 * (torch.relu(-t_exp) ** 2)         # penalize t_exp < 0
+
+        return penalty
+       
+
+class CorrelationVariationalRNN(nn.Module):
+
+    def __init__(
+        self,
+        x_data,
+        filters_mask,
+        param_dim=5,
+        rnn_hidden_dim=64,
+        rnn_layers=1,
+        dense_hidden_dim=128,
+        dense_layers=1,
+        dropout_rate=0.0,
+    ):
+        super().__init__()
+
+        self.x_data = x_data
+        self.filters_mask = filters_mask
+        self.num_filters = filters_mask.shape[0]
+        self.param_dim = param_dim
+
+        input_size = x_data.shape[1]
+
+        # --------------------------------------------------
+        # One RNN per filter
+        # --------------------------------------------------
+        self.filter_rnns = nn.ModuleList()
+
+        for _ in range(self.num_filters):
+
+            self.filter_rnns.append(
+                nn.RNN(
+                    input_size=input_size,
+                    hidden_size=rnn_hidden_dim,
+                    num_layers=rnn_layers,
+                    batch_first=True,
+                )
+            )
+
+        # --------------------------------------------------
+        # Dense feature extractor
+        # --------------------------------------------------
+        combined_dim = self.num_filters * rnn_hidden_dim
+
+        dense_blocks = []
+
+        in_dim = combined_dim
+
+        for _ in range(dense_layers):
+            dense_blocks.extend(
+                [
+                    nn.Linear(in_dim, dense_hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(dropout_rate),
+                ]
+            )
+            in_dim = dense_hidden_dim
+
+        self.feature_net = nn.Sequential(*dense_blocks)
+
+        # --------------------------------------------------
+        # Variational output layer
+        # --------------------------------------------------
+        self.fc_mu = nn.Linear(in_dim, param_dim)
+        self.fc_chol = nn.Linear(in_dim, param_dim*(param_dim+1)//2)
+        # self.fc_mu = nn.Sequential(
+        #     nn.Linear(in_dim, param_dim))        
+        # self.fc_logvar = nn.Linear(in_dim, param_dim)
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+
+        eps = torch.randn_like(std)
+
+        return mu + eps * std
+
+    def forward(self):
+
+        latents = []
+
+        for i_f, rnn in enumerate(self.filter_rnns):
+
+            x_f = self.x_data[self.filters_mask[i_f]]
+
+            # (1, seq_len, n_features)
+            x_f = x_f.unsqueeze(0)
+
+            _, h_n = rnn(x_f)
+
+            # last layer hidden state
+            h_last = h_n[-1]
+
+            latents.append(h_last)
+
+        h = torch.cat(latents, dim=-1)
+        h = self.feature_net(h)
+
+        mu = F.softplus(self.fc_mu(h))
+
+        chol_params = self.fc_chol(h)
+
+        B = mu.shape[0]
+        D = mu.shape[1]
+
+        L = torch.zeros(B, D, D, device=h.device, dtype=h.dtype)
+
+        idx = torch.tril_indices(D, D, device=h.device)
+        L[:, idx[0], idx[1]] = chol_params
+
+        # positive diagonal
+        diag_idx = torch.arange(D, device=h.device)
+        L[:, diag_idx, diag_idx] = (
+            F.softplus(L[:, diag_idx, diag_idx]) + 1e-6
+        )
+
+        eps = torch.randn(B, D, device=h.device, dtype=h.dtype)
+
+        z = mu + torch.bmm(L, eps.unsqueeze(-1)).squeeze(-1)
+
+        return z.squeeze(0), mu.squeeze(0), L.squeeze(0)
+        # h = self.feature_net(h)
+
+        # mu = F.softplus(self.fc_mu(h))
+
+        # logvar = self.fc_logvar(h)
+
+        # z = self.reparameterize(mu, logvar)
+
+        # return z.squeeze(0), mu.squeeze(0), logvar.squeeze(0)
+
+
+class PriorConstrainedReLUCorrelationVariationalRNN(nn.Module):
+
+    def __init__(
+        self,
+        x_data,
+        filters_mask,
+        param_dim=5,
+        rnn_hidden_dim=64,
+        rnn_layers=1,
+        dense_hidden_dim=128,
+        dense_layers=1,
+        dropout_rate=0.0,
+        p_min=None,
+        p_max=None
+    ):
+        super().__init__()
+
+        self.x_data = x_data
+        self.filters_mask = filters_mask
+        self.num_filters = filters_mask.shape[0]
+        self.param_dim = param_dim
+        self.register_buffer("p_min",
+                            torch.tensor(p_min, dtype=torch.float32))
+
+        self.register_buffer("p_max",
+                            torch.tensor(p_max, dtype=torch.float32))
+
+        input_size = x_data.shape[1]
+
+        # --------------------------------------------------
+        # One RNN per filter
+        # --------------------------------------------------
+        self.filter_rnns = nn.ModuleList()
+
+        for _ in range(self.num_filters):
+
+            self.filter_rnns.append(
+                nn.RNN(
+                    input_size=input_size,
+                    hidden_size=rnn_hidden_dim,
+                    num_layers=rnn_layers,
+                    batch_first=True,
+                )
+            )
+
+        # --------------------------------------------------
+        # Dense feature extractor
+        # --------------------------------------------------
+        combined_dim = self.num_filters * rnn_hidden_dim
+
+        dense_blocks = []
+
+        in_dim = combined_dim
+
+        for _ in range(dense_layers):
+            dense_blocks.extend(
+                [
+                    nn.Linear(in_dim, dense_hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(dropout_rate),
+                ]
+            )
+            in_dim = dense_hidden_dim
+
+        self.feature_net = nn.Sequential(*dense_blocks)
+
+        # --------------------------------------------------
+        # Variational output layer
+        # --------------------------------------------------
+        self.fc_mu = nn.Linear(in_dim, param_dim)
+        self.fc_chol = nn.Linear(in_dim, param_dim*(param_dim+1)//2)
+        # self.fc_mu = nn.Sequential(
+        #     nn.Linear(in_dim, param_dim))        
+        # self.fc_logvar = nn.Linear(in_dim, param_dim)
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+
+        eps = torch.randn_like(std)
+
+        return mu + eps * std
+
+    def forward(self):
+
+        latents = []
+
+        for i_f, rnn in enumerate(self.filter_rnns):
+
+            x_f = self.x_data[self.filters_mask[i_f]]
+
+            # (1, seq_len, n_features)
+            x_f = x_f.unsqueeze(0)
+
+            _, h_n = rnn(x_f)
+
+            # last layer hidden state
+            h_last = h_n[-1]
+
+            latents.append(h_last)
+
+        h = torch.cat(latents, dim=-1)
+        h = self.feature_net(h)
+
+        mu = F.softplus(self.fc_mu(h))
+
+        chol_params = self.fc_chol(h)
+
+        B = mu.shape[0]
+        D = mu.shape[1]
+
+        L = torch.zeros(B, D, D, device=h.device, dtype=h.dtype)
+
+        idx = torch.tril_indices(D, D, device=h.device)
+        L[:, idx[0], idx[1]] = chol_params
+
+        # positive diagonal
+        diag_idx = torch.arange(D, device=h.device)
+        L[:, diag_idx, diag_idx] = (
+            F.softplus(L[:, diag_idx, diag_idx]) + 1e-6
+        )
+
+        eps = torch.randn(B, D, device=h.device, dtype=h.dtype)
+        z_latent = mu + torch.bmm(
+                                    L,
+                                    eps.unsqueeze(-1)
+                                ).squeeze(-1)
+        # raw = mu + torch.bmm(
+        #     L,
+        #     eps.unsqueeze(-1)
+        # ).squeeze(-1)
+
+        # z = self.p_min + (
+        #     self.p_max - self.p_min
+        # ) * torch.sigmoid(raw/2)
+        return z_latent.squeeze(), mu.squeeze(0), L.squeeze(0)
+        # h = self.feature_net(h)
+
+        # mu = F.softplus(self.fc_mu(h))
+
+        # logvar = self.fc_logvar(h)
+
+        # z = self.reparameterize(mu, logvar)
+
+        # return z.squeeze(0), mu.squeeze(0), logvar.squeeze(0)
+
+
+# class VariationalSC4Loss(nn.Module):
+
+#     def __init__(
+#         self,
+#         ufilters,
+#         z,
+#         beta=1e-3,
+#         alpha=1.0,
+#         min_t0=2.99,
+#         fixed_frhom=None,
+#     ):
+#         super().__init__()
+
+#         self.sc4model = ShockCooling4(
+#             z=z,
+#             device=device,
+#         )
+
+#         self.ufilters = ufilters
+
+#         self.beta = beta
+#         self.alpha = alpha
+
+#         self.min_t0 = min_t0
+#         self.fixed_frhom = fixed_frhom
+
+#     def forward(
+#         self,
+#         sample,
+#         mu,
+#         logvar,
+#         targets,
+#         filters_mask,
+#     ):
+
+#         y_true = self.get_y_true(
+#             targets,
+#             filters_mask,
+#         )
+
+#         y_fit = self.get_yfit(
+#             sample,
+#             targets,
+#             filters_mask,
+#         )
+
+#         sigma_obs = self.get_sigma_obs(
+#             targets,
+#             filters_mask,
+#         )
+
+#         # ----------------------------------
+#         # Likelihood
+#         # ----------------------------------
+
+#         nll = (
+#             0.5
+#             * (
+#                 torch.log(
+#                     sigma_obs**2 + 1e-8
+#                 )
+#                 + (y_true - y_fit) ** 2
+#                 / (sigma_obs**2 + 1e-8)
+#             )
+#         ).mean()
+
+#         # ----------------------------------
+#         # KL(q || N(0,I))
+#         # ----------------------------------
+
+#         kl = -0.5 * torch.sum(
+#             1
+#             + logvar
+#             - mu.pow(2)
+#             - logvar.exp()
+#         )
+
+#         # ----------------------------------
+#         # Physical prior
+#         # ----------------------------------
+
+#         log_prior = self.get_log_prior(
+#             mu
+#         )
+
+#         loss = (
+#             nll
+#             + self.beta * kl
+#             - self.alpha * log_prior
+#         )
+
+#         return loss
+
+#     def get_log_prior(self, outputs):
+
+#         eps = 1e-8
+
+#         if len(outputs) == 5:
+
+#             v_s = outputs[0]
+#             M_env = outputs[1]
+#             f_rho_M = outputs[2]
+#             R = outputs[3]
+#             t_exp = outputs[4]
+
+#         else:
+
+#             v_s = outputs[0]
+#             M_env = outputs[1]
+
+#             if self.fixed_frhom is not None:
+#                 f_rho_M = self.fixed_frhom
+#             else:
+#                 f_rho_M = outputs[1]
+
+#             R = outputs[2]
+#             t_exp = outputs[3]
+
+#         # ----------------------------------
+#         # Example physical priors
+#         # ----------------------------------
+
+#         lp = 0.0
+
+#         # log(v_s) ~ N(0,1)
+#         lp += Normal(
+#             torch.tensor(0.0, device=outputs.device),
+#             torch.tensor(1.0, device=outputs.device),
+#         ).log_prob(
+#             torch.log(v_s + eps)
+#         )
+
+#         # log(M_env) ~ N(0,1)
+#         lp += Normal(
+#             torch.tensor(0.0, device=outputs.device),
+#             torch.tensor(1.0, device=outputs.device),
+#         ).log_prob(
+#             torch.log(M_env + eps)
+#         )
+
+#         # log(R) ~ N(1,1)
+#         lp += Normal(
+#             torch.tensor(1.0, device=outputs.device),
+#             torch.tensor(1.0, device=outputs.device),
+#         ).log_prob(
+#             torch.log(R + eps)
+#         )
+
+#         if len(outputs) == 5:
+
+#             lp += Normal(
+#                 torch.tensor(0.0, device=outputs.device),
+#                 torch.tensor(1.0, device=outputs.device),
+#             ).log_prob(
+#                 torch.log(f_rho_M + eps)
+#             )
+
+#         # truncated prior on t_exp
+#         if (
+#             (t_exp < 0)
+#             or (t_exp > self.min_t0)
+#         ):
+#             return torch.tensor(
+#                 -1e8,
+#                 device=outputs.device,
+#             )
+
+#         return lp.sum()
+
+#     def get_sigma_obs(
+#         self,
+#         targets,
+#         filters_mask,
+#     ):
+
+#         sigma = []
+
+#         for i in range(
+#             len(self.ufilters)
+#         ):
+#             sigma.append(
+#                 targets[:, 2][filters_mask[i]]
+#             )
+
+#         return torch.cat(sigma)
+
+#     def get_y_true(
+#         self,
+#         targets,
+#         filters_mask,
+#     ):
+
+#         y = []
+
+#         for i in range(
+#             len(self.ufilters)
+#         ):
+#             y.append(
+#                 targets[:, 1][filters_mask[i]]
+#             )
+
+#         return torch.cat(y)
+
+#     def get_yfit(
+#         self,
+#         outputs,
+#         targets,
+#         filters_mask,
+#     ):
+
+#         outputs = torch.clamp(
+#             outputs,
+#             min=1e-6,
+#         )
+
+#         if len(outputs) == 5:
+
+#             v_s = outputs[0]
+#             M_env = outputs[1]
+#             f_rho_M = outputs[2]
+#             R = outputs[3]
+#             t_exp = outputs[4]
+
+#         else:
+
+#             v_s = outputs[0]
+#             M_env = outputs[1]
+
+#             if self.fixed_frhom is not None:
+#                 f_rho_M = self.fixed_frhom
+#             else:
+#                 f_rho_M = outputs[1]
+
+#             R = outputs[2]
+#             t_exp = outputs[3]
+
+#         t_exp = torch.clamp(
+#             t_exp,
+#             max=self.min_t0,
+#         )
+
+#         y_fit = []
+
+#         for i, filt in enumerate(
+#             self.ufilters
+#         ):
+
+#             lum = self.sc4model(
+#                 targets[:, 0][filters_mask[i]],
+#                 v_s=v_s,
+#                 M_env=M_env,
+#                 f_rho_M=f_rho_M,
+#                 R=R,
+#                 t_exp=t_exp,
+#                 f=filt,
+#             )
+
+#             y_fit.append(
+#                 torch.log10(lum)
+#             )
+
+#         return torch.cat(y_fit)
+
+
 def sigmoid(x, b):
     """Basic sigmoid function."""
     return 1 / (1 + torch.exp(-x*b))
@@ -651,6 +1519,111 @@ def print_outputs(outputs, loss, step):
     print("-" * 40)
 
 
+class VariationalRNN(nn.Module):
+
+    def __init__(
+        self,
+        x_data,
+        filters_mask,
+        param_dim=5,
+        rnn_hidden_dim=64,
+        rnn_layers=1,
+        dense_hidden_dim=128,
+        dense_layers=1,
+        dropout_rate=0.0,
+    ):
+        super().__init__()
+
+        self.x_data = x_data
+        self.filters_mask = filters_mask
+        self.num_filters = filters_mask.shape[0]
+        self.param_dim = param_dim
+
+        input_size = x_data.shape[1]
+
+        # --------------------------------------------------
+        # One RNN per filter
+        # --------------------------------------------------
+        self.filter_rnns = nn.ModuleList()
+
+        for _ in range(self.num_filters):
+
+            self.filter_rnns.append(
+                nn.RNN(
+                    input_size=input_size,
+                    hidden_size=rnn_hidden_dim,
+                    num_layers=rnn_layers,
+                    batch_first=True,
+                )
+            )
+
+        # --------------------------------------------------
+        # Dense feature extractor
+        # --------------------------------------------------
+        combined_dim = self.num_filters * rnn_hidden_dim
+
+        dense_blocks = []
+
+        in_dim = combined_dim
+
+        for _ in range(dense_layers):
+            dense_blocks.extend(
+                [
+                    nn.Linear(in_dim, dense_hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(dropout_rate),
+                ]
+            )
+            in_dim = dense_hidden_dim
+
+        self.feature_net = nn.Sequential(*dense_blocks)
+
+        # --------------------------------------------------
+        # Variational output layer
+        # --------------------------------------------------
+        self.fc_mu = nn.Sequential(
+            nn.Linear(in_dim, param_dim))        
+        self.fc_logvar = nn.Linear(in_dim, param_dim)
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+
+        eps = torch.randn_like(std)
+
+        return mu + eps * std
+
+    def forward(self):
+
+        latents = []
+
+        for i_f, rnn in enumerate(self.filter_rnns):
+
+            x_f = self.x_data[self.filters_mask[i_f]]
+
+            # (1, seq_len, n_features)
+            x_f = x_f.unsqueeze(0)
+
+            _, h_n = rnn(x_f)
+
+            # last layer hidden state
+            h_last = h_n[-1]
+
+            latents.append(h_last)
+
+        h = torch.cat(latents, dim=-1)
+
+        h = self.feature_net(h)
+
+        mu = F.softplus(self.fc_mu(h))
+
+        logvar = self.fc_logvar(h)
+
+        z = self.reparameterize(mu, logvar)
+
+        return z.squeeze(0), mu.squeeze(0), logvar.squeeze(0)
+
+
 class BayesianLinear(nn.Module):
     def __init__(self, in_features, out_features, prior_var=1.0):
         super().__init__()
@@ -686,6 +1659,98 @@ class BayesianLinear(nn.Module):
         self.log_variational_posterior = var_post_w.log_prob(weight).sum() + var_post_b.log_prob(bias).sum()
 
         return F.linear(x, weight, bias)
+
+
+
+
+class MultiFilterHybridBNN(nn.Module):
+    def __init__(
+        self,
+        x_data,
+        filters_mask,
+        param_dim=5,
+        hidden_dim=64,
+        n_filter_layers=1,
+        n_combined_layers=1,
+        dropout_rate=0,
+    ):
+        super().__init__()
+
+        self.param_dim = param_dim
+        self.num_filters = filters_mask.shape[0]
+        self.filters_mask = filters_mask
+        self.x_data = x_data
+        self.dropout_rate = dropout_rate
+
+        # --------------------------------------------------
+        # Deterministic per-filter feature extractors
+        # --------------------------------------------------
+        self.filter_nets = nn.ModuleList()
+
+        for i_f in range(self.num_filters):
+            n_points = int(torch.sum(self.filters_mask[i_f]).item())
+            input_dim = n_points * self.x_data.shape[1]
+
+            layers = []
+
+            for i in range(n_filter_layers):
+                out_dim = hidden_dim
+
+                layers.append(nn.Linear(input_dim, out_dim))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout_rate))
+
+                input_dim = out_dim
+
+            self.filter_nets.append(nn.Sequential(*layers))
+
+        combined_dim = hidden_dim * self.num_filters
+
+        # --------------------------------------------------
+        # Deterministic shared network
+        # --------------------------------------------------
+        combined_layers = []
+        in_dim = combined_dim
+
+        for _ in range(n_combined_layers):
+            combined_layers.append(nn.Linear(in_dim, param_dim))
+            combined_layers.append(nn.ReLU())
+            combined_layers.append(nn.Dropout(dropout_rate))
+            in_dim = param_dim
+
+        self.feature_net = nn.Sequential(*combined_layers)
+
+        # --------------------------------------------------
+        # Bayesian output layer only
+        # --------------------------------------------------
+        self.bayes_out = BayesianLinear(in_dim, param_dim)
+
+        self.activation = GeneralizedSigmoid(
+            beta=0.5,
+            scale=10
+        )
+
+    def forward(self):
+        x = self.x_data
+
+        latents = []
+
+        for i_f, net in enumerate(self.filter_nets):
+            x_f = x[self.filters_mask[i_f]]
+            x_f_flat = x_f.flatten().unsqueeze(0)
+
+            h_f = net(x_f_flat)
+            latents.append(h_f)
+
+        h_all = torch.cat(latents, dim=-1)
+
+        h = self.feature_net(h_all)
+
+        out = self.bayes_out(h)
+        out = self.activation(out)
+
+        return out.squeeze(0)
+
 
 
 class MultiFilterBNN(nn.Module):

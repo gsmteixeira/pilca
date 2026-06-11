@@ -1,9 +1,12 @@
 import sys
+
+from lightcurve_fitting import filters, fitting
+from lightcurve_fitting import lightcurve
 sys.path.append("/tf/ProjectGabriel/pilca")
 
 import numpy as np
 import pandas as pd
-from lightcurve_fitting import models, filters, lightcurve, fitting
+from lightcurve_fitting import models
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import importlib
